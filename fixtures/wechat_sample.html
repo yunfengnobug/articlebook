@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta property="og:title" content="og 标题不该优先于正文标题" />
+    <title>标题栏不该优先</title>
+  </head>
+  <body>
+    <!-- articlebook-source: https://mp.weixin.qq.com/s/demo-article -->
+    <h1 id="activity-name">把长文收成一本小书</h1>
+    <a id="js_name" class="rich_media_meta_nickname">ArticleBook 示例</a>
+    <em id="publish_time">2026-10-01</em>
+    <div id="js_content" class="rich_media_content">
+      <section>
+        <p>这是一篇用于离线测试的微信文章正文，不应该依赖网络。</p>
+        <p>
+          归档时保留<strong>本地化图片</strong>和
+          <a href="https://example.com/read">示例链接</a>。
+        </p>
+        <p>
+          <img
+            alt="封面"
+            data-src="https://mmbiz.qpic.cn/example/cover.jpg"
+            src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+          />
+        </p>
+        <mp-common-vote></mp-common-vote>
+        <div class="qr_code_pc">二维码不该出现</div>
+      </section>
+    </div>
+    <div id="js_recommend">推荐阅读不该出现</div>
+  </body>
+</html>

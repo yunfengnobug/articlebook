@@ -1,0 +1,7 @@
+# 个人阅读清单示例。只放你自己有权保存的链接。
+https://example.com/posts/one?utm_source=newsletter
+https://example.com/posts/one
+https://mp.weixin.qq.com/s?__biz=MzTest&mid=1&idx=1&sn=abc&scene=21
+
+请看这篇 https://example.com/posts/two。
+not-a-url
