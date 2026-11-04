@@ -363,11 +363,20 @@ pub async fn preview_wechat_history(
     })
 }
 
+/// Opens https://mp.weixin.qq.com/ in its own window.
+///
+/// The command is async on purpose. On Windows, `WebviewWindowBuilder` inside a
+/// synchronous command deadlocks WebView2 (wry#583): the controller never
+/// finishes, the new window stays white, and the UI thread never handles
+/// WM_CLOSE. Async commands run off that thread, so the page can load and the
+/// title-bar close button keeps working at any time.
 #[tauri::command]
-pub fn open_wechat_login_window(app: AppHandle) -> Result<(), String> {
+pub async fn open_wechat_login_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(WECHAT_LOGIN_LABEL) {
+        let _ = window.set_closable(true);
+        let _ = window.unminimize();
         window.show().map_err(|err| err.to_string())?;
-        let _ = window.set_focus();
+        window.set_focus().map_err(|err| err.to_string())?;
         return Ok(());
     }
     let app_nav = app.clone();
@@ -380,8 +389,14 @@ pub fn open_wechat_login_window(app: AppHandle) -> Result<(), String> {
         .title("微信网页登录")
         .inner_size(980.0, 760.0)
         .min_inner_size(640.0, 480.0)
+        .decorations(true)
+        .closable(true)
+        .focused(true)
         .on_navigation(move |url| {
-            record_wechat_page(&app_nav, url);
+            // NavigationStarting runs on the WebView2 UI thread. Calling
+            // emit() here re-enters that thread: the closure never returns,
+            // the load stays blank, and the window cannot be closed.
+            schedule_wechat_page(&app_nav, url.clone());
             true
         })
         .build()
@@ -399,6 +414,18 @@ fn wechat_session_path(provider_id: &str, state: &AppState) -> Option<PathBuf> {
         "wechat-web" | "wechat-history" => Some(session_file(&state.data_dir)),
         _ => None,
     }
+}
+
+fn schedule_wechat_page(app: &AppHandle, url: tauri::Url) {
+    if url.host_str() != Some("mp.weixin.qq.com") {
+        return;
+    }
+    let app = app.clone();
+    // Detach before touching another webview. spawn_blocking does not run the
+    // closure inline, so NavigationStarting can return and allow the load.
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        record_wechat_page(&app, &url);
+    });
 }
 
 fn record_wechat_page(app: &AppHandle, url: &tauri::Url) {

@@ -16,18 +16,18 @@ ArticleBook 是一个本地桌面工具，把你已经拿到的文章链接整�
 
 ## 开发
 
-需要 Node.js 22、Rust stable，以及桌面版对应的系统 WebView（Windows 上是 WebView2）。
+需要 Node.js 22、pnpm 10（`package.json` 的 `packageManager` 字段）、Rust stable，以及桌面版对应的系统 WebView（Windows 上是 WebView2）。依赖只用 pnpm，锁文件是 `pnpm-lock.yaml`。
 
 ```bash
-npm install
+pnpm install
 cargo test -p articlebook-engine
-npm run tauri dev
+pnpm tauri dev
 ```
 
 只看界面、不跑桌面壳：
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
 开发服务器是 [http://127.0.0.1:43123](http://127.0.0.1:43123)。浏览器里可以切换模式；抓取和写文件要在 Tauri 窗口里进行。
@@ -109,7 +109,7 @@ cargo run -p articlebook-engine --bin articlebook-cli -- history-parse \
 
 这台开发环境没有完成微信扫码，所以端到端的真实登录没有在这里跑通。请在自己的 Windows 桌面上：
 
-1. `npm run tauri dev`
+1. `pnpm tauri dev`
 2. 切到公众号
 3. 点「在应用内打开登录页」，自己扫码，打开一个你有权阅读的历史消息页
 4. 点「我已打开历史消息 · 保存」，确认步骤 3 显示「已保存某某号」
@@ -126,16 +126,16 @@ cargo run -p articlebook-engine --bin articlebook-cli -- history-parse \
 Windows PowerShell：
 
 ```powershell
-npm install
+pnpm install
 $env:TAURI_SIGNING_PRIVATE_KEY = (Resolve-Path .\signing\articlebook.key)
-npm run tauri build -- --bundles nsis
+pnpm tauri build --bundles nsis
 ```
 
 macOS / Linux：
 
 ```bash
-npm install
-TAURI_SIGNING_PRIVATE_KEY="$PWD/signing/articlebook.key" npm run tauri build -- --bundles nsis
+pnpm install
+TAURI_SIGNING_PRIVATE_KEY="$PWD/signing/articlebook.key" pnpm tauri build --bundles nsis
 ```
 
 这个仓库是 Cargo workspace，安装包在仓库根目录的 `target/release/bundle/nsis/`，不在 `src-tauri/target/`。签名成功时，旁边还有同名 `.sig`。
