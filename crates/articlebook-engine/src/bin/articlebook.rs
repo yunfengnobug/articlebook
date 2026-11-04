@@ -1,7 +1,7 @@
 use articlebook_engine::{
-    cli_app_dirs, export_urls, extract_html, init_logging, normalize_url, source_hint_from_html,
-    suggest_output_dir, today_stamp, ExportOptions, NormalizeOptions, NullSink, ReqwestClient,
-    USER_AGENT,
+    cli_app_dirs, export_urls, extract_html, init_logging, normalize_url, parse_history_document,
+    source_hint_from_html, suggest_output_dir, today_stamp, ExportOptions, NormalizeOptions,
+    NullSink, ReqwestClient, USER_AGENT,
 };
 use std::env;
 use std::path::PathBuf;
@@ -66,6 +66,7 @@ fn run() -> Result<(), String> {
         }
         "assemble-html" => assemble_html(&args),
         "batch" => batch(&args),
+        "history-parse" => history_parse(&args),
         other => Err(format!(
             "未知命令：{other}。运行 articlebook-cli help 查看用法。"
         )),
@@ -188,6 +189,20 @@ fn positionals(args: &[String]) -> Vec<String> {
     out
 }
 
+fn history_parse(args: &[String]) -> Result<(), String> {
+    let path = args
+        .first()
+        .filter(|value| !value.starts_with("--"))
+        .ok_or("用法：articlebook-cli history-parse <history.json>")?;
+    let body = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
+    let entries = parse_history_document(&body).map_err(|err| err.to_string())?;
+    for entry in &entries {
+        println!("{}", entry.url);
+    }
+    eprintln!("解析到 {} 篇", entries.len());
+    Ok(())
+}
+
 fn print_help() {
     println!(
         "\
@@ -198,8 +213,11 @@ ArticleBook 命令行（个人阅读归档）
   articlebook-cli extract <file.html>
   articlebook-cli assemble-html --out DIR --title TITLE file.html ...
   articlebook-cli batch --input urls.txt --out DIR [--title TITLE] [--images] [--no-epub] [--no-cache]
+  articlebook-cli history-parse fixtures/wechat_history_getmsg.json
 
-只归档你有权保存的链接。不会登录微信，也不会抓取公众号后台。
+只归档你有权保存的链接。history-parse 只解析离线目录样例，不会登录。
+桌面版的「微信网页会话」用你自己打开的历史消息页或公众平台图文列表拉取目录。
+不会调用 WMPF / Frida，也不会伪装微信客户端。
 数据目录：CLI 使用系统的 ArticleBook 数据/缓存目录；桌面版使用 Tauri 应用目录。
 "
     );

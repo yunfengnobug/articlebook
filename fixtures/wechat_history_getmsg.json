@@ -1,0 +1,7 @@
+{
+  "ret": 0,
+  "errmsg": "ok",
+  "msg_count": 1,
+  "can_msg_continue": 1,
+  "general_msg_list": "{\"list\":[{\"comm_msg_info\":{\"id\":1001,\"datetime\":1750000000,\"type\":49},\"app_msg_ext_info\":{\"title\":\"把长文收成一本小书\",\"author\":\"ArticleBook 示例\",\"content_url\":\"https://mp.weixin.qq.com/s?__biz=MzFixture&mid=10&idx=1&sn=aaa&scene=21&chksm=ffff\",\"multi_app_msg_item_list\":[{\"title\":\"第二篇\",\"author\":\"ArticleBook 示例\",\"content_url\":\"https://mp.weixin.qq.com/s?__biz=MzFixture&mid=10&idx=2&sn=bbb&scene=21\"}]}},{\"comm_msg_info\":{\"type\":1,\"content\":\"纯文字消息不该变成文章\"}}]}"
+}

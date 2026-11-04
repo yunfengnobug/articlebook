@@ -1,7 +1,9 @@
 //! Local article archive engine used by the ArticleBook desktop app.
 //!
 //! The crate fetches pages you already have links for, extracts readable text,
-//! and writes Markdown plus EPUB. It does not log into WeChat or crawl an account.
+//! and writes Markdown plus EPUB. A WeChat web provider can page a history list
+//! only after the user saves a session from a login they completed themselves.
+//! It does not start that login, impersonate the WeChat client, or call WMPF.
 
 #![forbid(unsafe_code)]
 
@@ -12,6 +14,7 @@ mod epub;
 mod error;
 mod extract;
 mod fetch;
+mod history;
 mod images;
 mod logging;
 mod model;
@@ -29,13 +32,18 @@ pub use extract::{extract_html, source_hint_from_html};
 pub use fetch::{
     decode_document, decode_text_bytes, Fetched, HttpClient, ReqwestClient, USER_AGENT,
 };
+pub use history::{
+    collect_history, describe_wechat_page, load_session, parse_history_document, prepare_session,
+    save_session, session_file, session_from_page_url, HistoryClient, HistoryEntry, HistoryKind,
+    PageHint, SessionSummary, WechatWebSession, SESSION_FILE_NAME,
+};
 pub use logging::init_logging;
 pub use model::{Article, ArticleKind, Block, FailureRecord, Inline};
 pub use paths::{cli_app_dirs, suggest_output_dir, today_stamp, AppDirs};
 pub use pipeline::{export_urls, ExportOptions, JobReport, NullSink, ProgressEvent, ProgressSink};
 pub use provider::{
     describe_providers, provider_by_id, AccountProvider, AccountRequest, ManualProvider,
-    ProviderInfo, ProviderListing,
+    ProviderInfo, ProviderListing, WechatWebProvider,
 };
 pub use urlutil::{normalize_url, parse_url_list, NormalizeOptions, ParsedUrls};
 

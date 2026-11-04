@@ -1,0 +1,18 @@
+{
+  "base_resp": { "ret": 0, "err_msg": "ok" },
+  "app_msg_cnt": 2,
+  "app_msg_list": [
+    {
+      "aid": "1",
+      "title": "后台文章一",
+      "link": "https://mp.weixin.qq.com/s?__biz=MzOwner&mid=1&idx=1&sn=own1&scene=0",
+      "update_time": 1700000000
+    },
+    {
+      "aid": "2",
+      "title": "后台文章二",
+      "link": "https://mp.weixin.qq.com/s/short-owner",
+      "update_time": 1700001000
+    }
+  ]
+}

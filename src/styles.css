@@ -93,6 +93,7 @@ main {
 .card-head h2 { font-size: 22px; }
 .card-head p, .note, footer { color: #6e655c; font-size: 14px; }
 .note { margin: 6px 0 10px; }
+.preview-block { white-space: pre-wrap; word-break: break-all; }
 
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .field span { font-size: 13px; color: #5c534b; }
@@ -121,7 +122,9 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
   font-size: 14px;
 }
 .checks label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
-.row-actions { display: flex; gap: 8px; margin-bottom: 8px; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.cookie-box { margin: 0 0 12px; }
+.cookie-box textarea { min-height: 72px; }
 .hidden { display: none; }
 details { margin-bottom: 14px; }
 summary { cursor: pointer; color: #5c534b; }

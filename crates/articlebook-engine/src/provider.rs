@@ -1,16 +1,24 @@
 use crate::error::EngineError;
 use crate::fetch::decode_text_bytes;
+use crate::history::{
+    collect_history, history_limit_or_default, load_session, HistoryClient, ReqwestHistoryClient,
+};
+use async_trait::async_trait;
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 /// A way to turn an account identifier into a list of article URLs.
 ///
-/// v1 only ships [`ManualProvider`]. Browser login and WMPF are named here so
-/// the UI can show them as unavailable. They do not log in or attach to WeChat.
+/// [`ManualProvider`] reads links the user already copied. [`WechatWebProvider`]
+/// pages an official WeChat web history or publisher list with a session the user
+/// saved after signing in themselves. WMPF is named so the UI can show it as unavailable.
+#[async_trait]
 pub trait AccountProvider: Send + Sync {
     fn id(&self) -> &str;
     fn display_name(&self) -> &str;
-    fn list_links(&self, request: &AccountRequest) -> Result<ProviderListing, EngineError>;
+    async fn list_links(&self, request: &AccountRequest) -> Result<ProviderListing, EngineError>;
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +27,8 @@ pub struct AccountRequest {
     pub account_name: String,
     pub links_text: String,
     pub links_file: Option<PathBuf>,
+    pub session_file: Option<PathBuf>,
+    pub history_limit: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +49,7 @@ pub struct ProviderInfo {
 
 pub struct ManualProvider;
 
+#[async_trait]
 impl AccountProvider for ManualProvider {
     fn id(&self) -> &str {
         "manual"
@@ -48,7 +59,7 @@ impl AccountProvider for ManualProvider {
         "手动链接文件"
     }
 
-    fn list_links(&self, request: &AccountRequest) -> Result<ProviderListing, EngineError> {
+    async fn list_links(&self, request: &AccountRequest) -> Result<ProviderListing, EngineError> {
         let text = if let Some(path) = request
             .links_file
             .as_ref()
@@ -77,12 +88,78 @@ impl AccountProvider for ManualProvider {
     }
 }
 
+pub struct WechatWebProvider {
+    client: Arc<dyn HistoryClient>,
+    page_delay: Duration,
+}
+
+impl WechatWebProvider {
+    pub fn live() -> Result<Self, EngineError> {
+        Ok(Self {
+            client: Arc::new(ReqwestHistoryClient::new(Duration::from_secs(25))?),
+            page_delay: Duration::from_millis(800),
+        })
+    }
+
+    pub fn with_client(client: Arc<dyn HistoryClient>, page_delay: Duration) -> Self {
+        Self { client, page_delay }
+    }
+}
+
+#[async_trait]
+impl AccountProvider for WechatWebProvider {
+    fn id(&self) -> &str {
+        "wechat-web"
+    }
+
+    fn display_name(&self) -> &str {
+        "微信网页会话"
+    }
+
+    async fn list_links(&self, request: &AccountRequest) -> Result<ProviderListing, EngineError> {
+        let path = request
+            .session_file
+            .as_ref()
+            .ok_or_else(|| EngineError::Message("请先保存微信网页会话，再拉取历史目录。".into()))?;
+        let session = load_session(path)?;
+        let entries = collect_history(
+            self.client.as_ref(),
+            &session,
+            history_limit_or_default(request.history_limit),
+            self.page_delay,
+        )
+        .await?;
+        let account_name = if !request.account_name.trim().is_empty() {
+            request.account_name.trim().to_string()
+        } else if !session.account_name.trim().is_empty() {
+            session.account_name.clone()
+        } else {
+            "未命名公众号".into()
+        };
+        let urls_text = entries
+            .iter()
+            .map(|entry| entry.url.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(ProviderListing {
+            account_name,
+            urls_text,
+            source_note: format!(
+                "目录来自你保存的微信网页会话（{}），共 {} 篇。没有调用 WMPF 或 Frida。",
+                session.kind.label(),
+                entries.len()
+            ),
+        })
+    }
+}
+
 struct UnavailableProvider {
     id: &'static str,
     name: &'static str,
     reason: &'static str,
 }
 
+#[async_trait]
 impl AccountProvider for UnavailableProvider {
     fn id(&self) -> &str {
         self.id
@@ -92,13 +169,19 @@ impl AccountProvider for UnavailableProvider {
         self.name
     }
 
-    fn list_links(&self, _request: &AccountRequest) -> Result<ProviderListing, EngineError> {
+    async fn list_links(&self, _request: &AccountRequest) -> Result<ProviderListing, EngineError> {
         Err(EngineError::Message(self.reason.into()))
     }
 }
 
 pub fn describe_providers() -> Vec<ProviderInfo> {
     vec![
+        ProviderInfo {
+            id: "wechat-web".into(),
+            name: "微信网页会话".into(),
+            available: true,
+            note: "用你自己登录后的微信网页，拉取一个你有权阅读的公众号历史目录。不会调用 Frida 或 WMPF，也不会伪装微信客户端。".into(),
+        },
         ProviderInfo {
             id: "manual".into(),
             name: "手动链接文件".into(),
@@ -117,10 +200,11 @@ pub fn describe_providers() -> Vec<ProviderInfo> {
 pub fn provider_by_id(id: &str) -> Result<Box<dyn AccountProvider>, EngineError> {
     match id {
         "manual" | "" => Ok(Box::new(ManualProvider)),
+        "wechat-web" | "wechat-history" => Ok(Box::new(WechatWebProvider::live()?)),
         "wmpf" | "browser" | "wechat-login" => Ok(Box::new(UnavailableProvider {
             id: "wmpf",
             name: "微信登录 / WMPF",
-            reason: "尚未实现。本期不会登录微信，也不会调用 Frida 或 WMPF。请改用手动链接文件。",
+            reason: "尚未实现。本期不会登录微信，也不会调用 Frida 或 WMPF。请改用微信网页会话或手动链接。",
         })),
         other => Err(EngineError::Message(format!("未知的目录来源：{other}"))),
     }

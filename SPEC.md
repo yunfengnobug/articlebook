@@ -12,7 +12,7 @@ CI：GitHub Actions **仅构建 Windows** 安装包/便携包（不打 macOS/Lin
 
 ## 模式
 1. **链接列表**：多行 URL / 文件 / 粘贴抽链；可混微信与普通网页
-2. **公众号**：输入标识 → Provider 拉历史列表 → 同一正文管道；首期 Provider = Manual（导入链接文件），接口预留；登录浏览器/WMPF 后续
+2. **公众号**：Provider 拉历史列表 → 同一正文管道。Provider：`wechat-web`（用户自己登录微信网页后保存的会话）与 `manual`（导入链接文件）。WMPF / Frida 仍未实现，界面保持不可用。
 
 UI 顶栏模式切换按钮。
 
@@ -28,7 +28,7 @@ UI 顶栏模式切换按钮。
 
 ## 技术建议
 - 后端/引擎：Rust（Tauri commands）或 sidecar Python；优先 **Rust 引擎 + Tauri 2**，若正文库选型困难可用 Python sidecar 由 Tauri 拉起
-- 前端：Vite + React 或 Svelte（任选其一，保持简单）
+- 前端：Vite + Vue 3
 - 存储：应用数据目录 + SQLite
 - EPUB：Rust crate 或 sidecar 生成
 
@@ -52,10 +52,19 @@ articlebook/
 7. 公众号 Provider 协议 + Manual 保底
 另：加 Windows-only GitHub Actions（release 产物）
 
-步骤 8+（真实公众号目录、WMPF、PDF、非 Windows CI）不做，README 写后续。
+步骤 8 已做「微信网页会话」这一种真实目录：用户在应用内窗口或系统浏览器登录官方 `https://mp.weixin.qq.com/`，保存会话后再分页拉历史消息或公众平台图文列表。WMPF、Frida、PDF、非 Windows CI 仍不做。
+
+## 微信网页会话
+
+- 用户授权范围：一个你已经能打开的公众号历史，或你自己管理的图文列表。不是批量扒号，不绕过付费墙，不伪装微信客户端。
+- 鉴权：应用内登录窗口只导航并读取该窗口的 Cookie；系统浏览器路径由用户粘贴地址和可选 Cookie 头。登录窗口不在主权限里，没有远程 IPC 白名单。
+- 落盘：Tauri 数据目录 `wechat-web-session.json`（Unix `0600`）。含 cookie、key、passTicket、token、biz、uin、sourceUrl。空 Cookie 再保存会保留旧 Cookie，除非用户勾选清除。
+- 目录请求：`profile_ext?action=getmsg` 或 `appmsg?action=list_ex`，User-Agent 固定为带 `ArticleBook/0.1` 的桌面浏览器标识。验证页和 `ret != 0` 直接失败。
+- 尚未在无微信登录的环境验证扫码全流程。离线样例覆盖解析和「列表 → 导出」。
 
 ## 验收
 - README：开发启动、Windows 打包说明
 - Actions 仅 `windows-latest` job
 - 列表模式可导出 book.md / epub
-- 模式切换可见；公众号模式可用手动链接文件
+- 模式切换可见；公众号模式可用微信网页会话（需本机登录后才能拉到真目录）和手动链接文件
+- WMPF 行不可用，且不会发起 WMPF / Frida
