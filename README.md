@@ -158,7 +158,7 @@ Windows NSIS 安装包由 Tauri 2 updater 签名。公钥写在 `src-tauri/tauri
 
 `.github/workflows/build-windows.yml` 打包时优先把 `TAURI_SIGNING_PRIVATE_KEY` 指到 `signing/articlebook.key`，文件不存在才用 secret。工作流不设置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。Actions 环境里 `CI=true`，Tauri 会把缺省密码当成空字符串。
 
-`bundle.createUpdaterArtifacts` 为 `true` 时，Tauri 2 直接给 NSIS 安装包签名，产物是 `*-setup.exe` 和 `*-setup.exe.sig`，不是 v1 的 `.nsis.zip`。`v*` 标签构建还会在同一目录写 `latest.json`：`version` 用应用版本，`windows-x86_64` 和 `windows-x86_64-nsis` 都指向这个安装包，`signature` 是 `.sig` 文件的内容。草稿 Release 会带上安装包、`.sig` 和 `latest.json`。把草稿发布之后，`releases/latest` 才会把这份清单交给已安装的客户端。应用版本必须高于正在运行的版本，客户端才会安装；当前版本是 `0.1.1`。
+`bundle.createUpdaterArtifacts` 为 `true` 时，Tauri 2 直接给 NSIS 安装包签名，产物是 `*-setup.exe` 和 `*-setup.exe.sig`，不是 v1 的 `.nsis.zip`。`v*` 标签构建还会在同一目录写 `latest.json`：`version` 用应用版本，`windows-x86_64` 和 `windows-x86_64-nsis` 都指向这个安装包，`signature` 是 `.sig` 文件的内容。草稿 Release 会带上安装包、`.sig` 和 `latest.json`。把草稿发布之后，`releases/latest` 才会把这份清单交给已安装的客户端。应用版本必须高于正在运行的版本，客户端才会安装；当前版本是 `0.1.2`。
 
 仓库仍是私有时，没有登录的客户端访问 GitHub Release 下载地址会得到 404。自动更新要等仓库公开，或改成客户端能够匿名下载的地址。
 
