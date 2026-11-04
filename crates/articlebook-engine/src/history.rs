@@ -6,6 +6,10 @@
 //!
 //! The engine does not log in, does not launch WMPF or Frida, and does not send a WeChat client
 //! user agent. Callers pass query credentials and an optional cookie copied from that login.
+//!
+//! `history_limit == 0` ([`history_limit_or_default`]) means every article that login can read.
+//! Paging stops when `can_msg_continue` / `can_continue` is false, when a page has no articles,
+//! or at [`SAFETY_MAX_ARTICLES`] / [`SAFETY_MAX_PAGES`]. The desktop provider waits 800ms between pages.
 
 use crate::error::EngineError;
 use crate::fetch::USER_AGENT;
@@ -21,8 +25,20 @@ use url::Url;
 
 pub const SESSION_FILE_NAME: &str = "wechat-web-session.json";
 const PAGE_SIZE: usize = 10;
-const DEFAULT_LIMIT: usize = 40;
-const MAX_LIMIT: usize = 200;
+
+/// Most articles one pull will keep.
+///
+/// `history_limit == 0` ("全部") stops here even if WeChat still reports another page.
+/// A positive limit ("仅最近 N 篇") is also clamped to this ceiling.
+pub const SAFETY_MAX_ARTICLES: usize = 5_000;
+
+/// Most history responses one pull will send.
+///
+/// Each response asks for [`PAGE_SIZE`] items (10). This is high enough to reach
+/// [`SAFETY_MAX_ARTICLES`] when pages are short, and it ends the loop if
+/// `can_continue` never turns false. The desktop provider still waits 800ms
+/// between these requests.
+pub const SAFETY_MAX_PAGES: usize = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -211,7 +227,10 @@ pub fn describe_wechat_page(url: &str) -> PageHint {
     match session_from_page_url(url, "", "") {
         Ok(session) => PageHint {
             usable: true,
-            message: format!("这是{}页。保存后可以用它拉取目录。", session.kind.label()),
+            message: format!(
+                "这是{}页。点「我已打开历史消息 · 保存」。",
+                session.kind.label()
+            ),
             kind: session.kind.as_str().to_string(),
             biz: session.biz,
         },
@@ -351,12 +370,13 @@ pub async fn collect_history(
     delay: Duration,
 ) -> Result<Vec<HistoryEntry>, EngineError> {
     reject_cookie_injection(&session.cookie)?;
-    let limit = limit.clamp(1, MAX_LIMIT);
+    // `0` matches the public `history_limit` sentinel: no cap besides the safety ceiling.
+    let limit = resolve_history_limit(limit);
     let pace = Pace::new(delay);
     let mut offset = 0usize;
     let mut entries = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for _ in 0..30 {
+    for _ in 0..SAFETY_MAX_PAGES {
         if entries.len() >= limit {
             break;
         }
@@ -380,7 +400,7 @@ pub async fn collect_history(
                 added += 1;
             }
         }
-        if added == 0 || !page.can_continue {
+        if entries.len() >= limit || added == 0 || !page.can_continue {
             break;
         }
         let step = if page.step > 0 { page.step } else { PAGE_SIZE };
@@ -399,11 +419,19 @@ pub async fn collect_history(
     Ok(entries)
 }
 
+/// Resolve a caller-supplied article cap.
+///
+/// `0` means all readable history, up to [`SAFETY_MAX_ARTICLES`]. Any other value
+/// is "only the most recent N", also clamped to that ceiling.
 pub fn history_limit_or_default(limit: u32) -> usize {
+    resolve_history_limit(limit as usize)
+}
+
+fn resolve_history_limit(limit: usize) -> usize {
     if limit == 0 {
-        DEFAULT_LIMIT
+        SAFETY_MAX_ARTICLES
     } else {
-        (limit as usize).clamp(1, MAX_LIMIT)
+        limit.clamp(1, SAFETY_MAX_ARTICLES)
     }
 }
 
@@ -442,7 +470,8 @@ fn parse_history_page(body: &str) -> Result<HistoryPage, EngineError> {
     if let Some(list) = value.get("app_msg_list").and_then(Value::as_array) {
         let entries = entries_from_owner_list(list);
         let step = list.len();
-        let continue_flag = list.len() >= PAGE_SIZE;
+        // A short page is the end of the owner list. An explicit flag wins when present.
+        let continue_flag = explicit_continue(&value).unwrap_or(list.len() >= PAGE_SIZE);
         return Ok(HistoryPage {
             entries,
             can_continue: continue_flag,
@@ -469,7 +498,7 @@ fn parse_history_page(body: &str) -> Result<HistoryPage, EngineError> {
         .map(|n| n.max(0) as usize)
         .filter(|n| *n > 0)
         .unwrap_or(list.len());
-    let can_continue = json_flag(value.get("can_msg_continue"));
+    let can_continue = explicit_continue(&value).unwrap_or(false);
     Ok(HistoryPage {
         entries,
         can_continue,
@@ -684,6 +713,16 @@ fn json_i64(value: Option<&Value>) -> Option<i64> {
     })
 }
 
+/// `can_msg_continue` is the reader history flag. `can_continue` is accepted for the same meaning.
+fn explicit_continue(value: &Value) -> Option<bool> {
+    for key in ["can_msg_continue", "can_continue"] {
+        if value.get(key).is_some() {
+            return Some(json_flag(value.get(key)));
+        }
+    }
+    None
+}
+
 fn json_flag(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(flag)) => *flag,
@@ -735,6 +774,10 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), EngineError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::EngineError;
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+    use std::time::Duration;
 
     #[test]
     fn parses_reader_page_url() {
@@ -868,5 +911,257 @@ mod tests {
         .unwrap();
         assert!(cleared.cookie.is_empty());
         assert_eq!(cleared.account_name, "另一号");
+    }
+
+    #[test]
+    fn zero_history_limit_means_all_up_to_the_safety_ceiling() {
+        assert_eq!(history_limit_or_default(0), SAFETY_MAX_ARTICLES);
+        assert_eq!(history_limit_or_default(40), 40);
+        assert_eq!(history_limit_or_default(250), 250);
+        assert_eq!(
+            history_limit_or_default(u32::MAX),
+            SAFETY_MAX_ARTICLES,
+            "a recent-N cap cannot exceed the safety ceiling"
+        );
+        assert!(SAFETY_MAX_ARTICLES > 200);
+        assert!(SAFETY_MAX_PAGES >= SAFETY_MAX_ARTICLES / 10);
+    }
+
+    fn reader_session() -> WechatWebSession {
+        session_from_page_url(
+            "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzFixture&key=abc",
+            "wap_sid2=test",
+            "示例号",
+        )
+        .unwrap()
+    }
+
+    fn owner_session() -> WechatWebSession {
+        session_from_page_url(
+            "https://mp.weixin.qq.com/cgi-bin/appmsg?action=list_ex&type=9&token=TOK&lang=zh_CN",
+            "slave_sid=test",
+            "我的号",
+        )
+        .unwrap()
+    }
+
+    fn reader_page(start: usize, count: usize, can_continue: bool) -> String {
+        let list: Vec<_> = (0..count)
+            .map(|i| {
+                let n = start + i;
+                serde_json::json!({
+                    "comm_msg_info": {"type": 49, "id": n},
+                    "app_msg_ext_info": {
+                        "title": format!("文章{n}"),
+                        "content_url": format!(
+                            "https://mp.weixin.qq.com/s?__biz=MzFixture&mid={n}&idx=1&sn=s{n}"
+                        )
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let general = serde_json::json!({ "list": list }).to_string();
+        serde_json::json!({
+            "ret": 0,
+            "errmsg": "ok",
+            "msg_count": count,
+            "can_msg_continue": if can_continue { 1 } else { 0 },
+            "general_msg_list": general
+        })
+        .to_string()
+    }
+
+    fn owner_page(start: usize, count: usize, explicit_stop: bool) -> String {
+        let list: Vec<_> = (0..count)
+            .map(|i| {
+                let n = start + i;
+                serde_json::json!({
+                    "title": format!("后台{n}"),
+                    "link": format!(
+                        "https://mp.weixin.qq.com/s?__biz=MzOwner&mid={n}&idx=1&sn=o{n}"
+                    )
+                })
+            })
+            .collect();
+        let mut value = serde_json::json!({
+            "base_resp": {"ret": 0, "err_msg": "ok"},
+            "app_msg_list": list
+        });
+        if explicit_stop {
+            value["can_continue"] = serde_json::json!(0);
+        }
+        value.to_string()
+    }
+
+    struct ScriptedHistory {
+        pages: Mutex<Vec<String>>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl ScriptedHistory {
+        fn new(pages: Vec<String>) -> Self {
+            Self {
+                pages: Mutex::new(pages),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.lock().expect("calls").len()
+        }
+    }
+
+    #[async_trait]
+    impl HistoryClient for ScriptedHistory {
+        async fn get_text(
+            &self,
+            url: &str,
+            _cookie: &str,
+            user_agent: &str,
+            referer: &str,
+        ) -> Result<String, EngineError> {
+            assert!(url.starts_with("https://mp.weixin.qq.com/"), "{url}");
+            assert!(!user_agent.contains("MicroMessenger"));
+            assert!(referer.starts_with("https://mp.weixin.qq.com/"));
+            self.calls.lock().expect("calls").push(url.to_string());
+            let mut pages = self.pages.lock().expect("pages");
+            if pages.is_empty() {
+                return Err(EngineError::Fetch("没有更多目录页".into()));
+            }
+            Ok(pages.remove(0))
+        }
+    }
+
+    struct EndlessHistory {
+        per_page: usize,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl HistoryClient for EndlessHistory {
+        async fn get_text(
+            &self,
+            url: &str,
+            _cookie: &str,
+            user_agent: &str,
+            _referer: &str,
+        ) -> Result<String, EngineError> {
+            assert!(url.starts_with("https://mp.weixin.qq.com/"));
+            assert!(!user_agent.contains("MicroMessenger"));
+            let page = self
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let start = page * self.per_page;
+            Ok(reader_page(start, self.per_page, true))
+        }
+    }
+
+    #[tokio::test]
+    async fn zero_limit_keeps_paging_until_the_api_says_stop() {
+        let pages = 25;
+        let per_page = 10;
+        let bodies = (0..pages)
+            .map(|page| reader_page(page * per_page, per_page, page + 1 != pages))
+            .collect();
+        let client = ScriptedHistory::new(bodies);
+        let entries = collect_history(
+            &client,
+            &reader_session(),
+            history_limit_or_default(0),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert_eq!(entries.len(), 250);
+        assert!(entries.len() > 200, "全部 must not stop at the old 200 cap");
+        assert_eq!(client.calls(), pages);
+        assert!(entries.last().unwrap().url.contains("mid=249"));
+    }
+
+    #[tokio::test]
+    async fn recent_limit_above_two_hundred_is_honored_and_a_small_limit_stops() {
+        let bodies = (0..30)
+            .map(|page| reader_page(page * 10, 10, true))
+            .collect();
+        let client = ScriptedHistory::new(bodies);
+        let entries = collect_history(&client, &reader_session(), 250, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 250);
+        assert_eq!(client.calls(), 25, "200 would have stopped after 20 pages");
+
+        let bodies = (0..10)
+            .map(|page| reader_page(page * 10, 10, true))
+            .collect();
+        let client = ScriptedHistory::new(bodies);
+        let entries = collect_history(&client, &reader_session(), 15, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 15);
+        assert_eq!(client.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn empty_page_or_explicit_stop_ends_the_pull() {
+        let client = ScriptedHistory::new(vec![
+            reader_page(0, 10, true),
+            reader_page(1000, 0, true),
+            reader_page(2000, 10, true),
+        ]);
+        let entries = collect_history(&client, &reader_session(), 0, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 10);
+        assert_eq!(client.calls(), 2, "an empty page must not request another");
+
+        let client = ScriptedHistory::new(vec![owner_page(0, 10, true), owner_page(10, 10, false)]);
+        let entries = collect_history(&client, &owner_session(), 0, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 10);
+        assert_eq!(
+            client.calls(),
+            1,
+            "explicit can_continue=0 stops a full page"
+        );
+
+        let client = ScriptedHistory::new(vec![owner_page(0, 10, false), owner_page(10, 3, false)]);
+        let entries = collect_history(&client, &owner_session(), 0, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 13);
+        assert_eq!(client.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn endless_history_stops_on_the_safety_ceiling() {
+        let client = EndlessHistory {
+            per_page: 10,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let entries = collect_history(&client, &reader_session(), 0, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), SAFETY_MAX_ARTICLES);
+        assert_eq!(
+            client.calls.load(std::sync::atomic::Ordering::Relaxed),
+            SAFETY_MAX_ARTICLES / 10
+        );
+        assert!(client.calls.load(std::sync::atomic::Ordering::Relaxed) <= SAFETY_MAX_PAGES);
+
+        let client = EndlessHistory {
+            per_page: 1,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let entries = collect_history(&client, &reader_session(), 0, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), SAFETY_MAX_PAGES);
+        assert_eq!(
+            client.calls.load(std::sync::atomic::Ordering::Relaxed),
+            SAFETY_MAX_PAGES
+        );
+        assert!(entries.len() > 200);
+        assert!(entries.len() < SAFETY_MAX_ARTICLES);
     }
 }

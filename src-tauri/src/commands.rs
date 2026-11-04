@@ -305,7 +305,7 @@ pub async fn save_wechat_session(
         }
     }
     if page_url.is_empty() {
-        return Err("请先打开历史消息或图文列表，或把地址栏粘贴到「历史页地址」。".into());
+        return Err("请先在登录窗口打开历史消息，或在「高级：手动 Cookie」里粘贴地址。".into());
     }
     let mut cookie = req.cookie.trim().to_string();
     if cookie.is_empty() && !req.clear_cookie {

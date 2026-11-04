@@ -623,3 +623,65 @@ async fn wechat_web_history_fixture_lists_then_exports() {
 fn stored_contains_cookie(stored: &str) {
     assert!(stored.contains("wap_sid2=test"), "{stored}");
 }
+
+fn reader_history_page(start: usize, count: usize, can_continue: bool) -> String {
+    let list: Vec<_> = (0..count)
+        .map(|i| {
+            let n = start + i;
+            serde_json::json!({
+                "comm_msg_info": {"type": 49, "id": n},
+                "app_msg_ext_info": {
+                    "title": format!("文章{n}"),
+                    "content_url": format!(
+                        "https://mp.weixin.qq.com/s?__biz=MzFixture&mid={n}&idx=1&sn=s{n}"
+                    )
+                }
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "ret": 0,
+        "errmsg": "ok",
+        "msg_count": count,
+        "can_msg_continue": if can_continue { 1 } else { 0 },
+        "general_msg_list": serde_json::json!({ "list": list }).to_string()
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn wechat_web_history_limit_zero_reads_past_two_hundred() {
+    let dir = scratch();
+    let session = session_from_page_url(
+        "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzFixture&key=abc",
+        "wap_sid2=test",
+        "示例号",
+    )
+    .unwrap();
+    let session_path = dir.join("wechat-web-session.json");
+    save_session(&session_path, &session).unwrap();
+    let pages = 21;
+    let per_page = 10;
+    let client = Arc::new(SeqHistory {
+        bodies: Mutex::new(
+            (0..pages)
+                .map(|page| reader_history_page(page * per_page, per_page, page + 1 != pages))
+                .collect(),
+        ),
+        seen: Mutex::new(Vec::new()),
+    });
+    let provider = WechatWebProvider::with_client(
+        Arc::clone(&client) as Arc<dyn HistoryClient>,
+        std::time::Duration::ZERO,
+    );
+    let mut request = blank_account("示例号", "", None);
+    request.session_file = Some(session_path);
+    request.history_limit = 0;
+    let listing = provider.list_links(&request).await.unwrap();
+    let urls = parse_url_list(&listing.urls_text, &NormalizeOptions::default()).urls;
+    assert_eq!(urls.len(), 210, "history_limit 0 must keep paging past 200");
+    assert!(listing.source_note.contains("210"));
+    assert!(!listing.source_note.contains("安全上限"));
+    assert_eq!(client.seen.lock().expect("seen").len(), pages);
+    let _ = std::fs::remove_dir_all(&dir);
+}

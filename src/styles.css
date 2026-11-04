@@ -104,6 +104,13 @@ textarea, input, select {
   border-radius: 10px;
   padding: 10px 12px;
 }
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  flex: none;
+  padding: 0;
+  accent-color: #9d2c2c;
+}
 textarea { resize: vertical; min-height: 120px; }
 textarea:focus, input:focus, select:focus, button:focus-visible {
   outline: 2px solid #9d2c2c;
@@ -123,11 +130,45 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 }
 .checks label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-.cookie-box { margin: 0 0 12px; }
+.cookie-box { margin: 10px 0 0; }
 .cookie-box textarea { min-height: 72px; }
 .hidden { display: none; }
 details { margin-bottom: 14px; }
 summary { cursor: pointer; color: #5c534b; }
+
+.steps { display: flex; flex-direction: column; gap: 12px; }
+.step {
+  border: 1px solid #e4d8c8;
+  background: #fffdf9;
+  border-radius: 14px;
+  padding: 14px;
+}
+.step h3 {
+  margin: 0 0 8px;
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 600;
+}
+.tip { margin: 8px 0 0; color: #6e655c; font-size: 13px; }
+.step .tip:first-of-type { margin-top: 0; margin-bottom: 10px; }
+.step .step-actions + .tip { margin-top: 8px; margin-bottom: 0; }
+.step-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
+.session-line { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 0 0 10px; color: #3d342c; }
+.choice { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: center; margin: 0 0 4px; }
+.choice label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.narrow { width: 88px; }
+.narrow.idle { opacity: 0.55; }
+.switch-line { margin: 4px 0 12px; }
+.linkish {
+  border: 0;
+  background: transparent;
+  color: #9d2c2c;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.linkish:disabled { opacity: 0.55; }
+.primary.block { width: 100%; margin-top: 4px; }
 
 .primary, .ghost {
   border-radius: 999px;
