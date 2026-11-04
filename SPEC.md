@@ -6,7 +6,7 @@ CI：GitHub Actions **仅构建 Windows** 安装包/便携包（不打 macOS/Lin
 
 ## 非目标
 - 不做公网 SaaS / 多用户
-- 不绕过付费墙、不做未授权商用批量扒号
+- 不绕过付费墙、不抓取你登录后仍打不开的公众号
 - 互动组件最多占位
 - 首期不做 macOS/Linux 发布产物
 
@@ -56,7 +56,7 @@ articlebook/
 
 ## 微信网页会话
 
-- 用户授权范围：一个你已经能打开的公众号历史，或你自己管理的图文列表。不是批量扒号，不绕过付费墙，不伪装微信客户端。
+- 用户授权范围：一个你已经能打开的公众号的全部历史，或你自己管理的图文列表。默认一直翻到没有下一页，单次最多 5000 篇、1000 页。不绕过付费墙，不伪装微信客户端，也不去抓你打不开的号。
 - 鉴权：应用内登录窗口只导航并读取该窗口的 Cookie；系统浏览器路径由用户粘贴地址和可选 Cookie 头。登录窗口不在主权限里，没有远程 IPC 白名单。
 - 落盘：Tauri 数据目录 `wechat-web-session.json`（Unix `0600`）。含 cookie、key、passTicket、token、biz、uin、sourceUrl。空 Cookie 再保存会保留旧 Cookie，除非用户勾选清除。
 - 目录请求：`profile_ext?action=getmsg` 或 `appmsg?action=list_ex`，User-Agent 固定为带 `ArticleBook/0.1` 的桌面浏览器标识。验证页和 `ret != 0` 直接失败。

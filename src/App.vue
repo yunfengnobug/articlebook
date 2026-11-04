@@ -44,7 +44,7 @@ const fallbackProviders: ProviderInfo[] = [
     id: "wechat-web",
     name: "微信网页会话",
     available: true,
-    note: "用你自己登录后的微信网页，拉取一个你有权阅读的公众号历史目录。不会调用 Frida 或 WMPF，也不会伪装微信客户端。",
+    note: "用你自己登录后的微信网页，拉取一个你有权阅读的公众号的全部历史。单次有安全上限。不会调用 Frida 或 WMPF，也不会伪装微信客户端。",
   },
   {
     id: "manual",
@@ -72,6 +72,9 @@ const providers = ref<ProviderInfo[]>(fallbackProviders);
 const pageUrl = ref("");
 const cookieText = ref("");
 const clearCookie = ref(false);
+/** Keep in sync with `SAFETY_MAX_ARTICLES` in the engine. `0` means the whole history. */
+const SAFETY_MAX_ARTICLES = 5000;
+const fetchAll = ref(true);
 const historyLimit = ref(40);
 const session = ref<SessionSummary | null>(null);
 const pageHint = ref("");
@@ -123,25 +126,21 @@ function settings(): ExportSettings {
   };
 }
 
-function clampedHistoryLimit(): number {
+function historyLimitForRequest(): number {
+  if (fetchAll.value) return 0;
   const value = Number(historyLimit.value);
-  if (!Number.isFinite(value) || value <= 0) return 40;
-  return Math.min(200, Math.max(1, Math.round(value)));
+  if (!Number.isFinite(value) || value < 1) return 40;
+  return Math.min(SAFETY_MAX_ARTICLES, Math.max(1, Math.round(value)));
 }
 
-function kindLabel(kind: string): string {
-  if (kind === "reader-history") return "历史消息";
-  if (kind === "owner-console") return "公众平台图文";
-  return kind;
+function chooseRecent() {
+  fetchAll.value = false;
 }
 
 function describeSession(value: SessionSummary | null): string {
-  if (!value?.saved) {
-    return "还没有会话。保存后写到应用数据目录里的 wechat-web-session.json。";
-  }
-  const cookie = value.hasCookie ? "已带 Cookie" : "没有 Cookie";
-  const name = value.accountName || "未命名公众号";
-  return `已保存${kindLabel(value.kind)} · ${name} · ${cookie} · ${value.capturedAt}`;
+  if (!value?.saved) return "未登录";
+  const name = value.accountName.trim() || "这个公众号";
+  return `已保存「${name}」`;
 }
 
 function onProgress(event: ProgressEvent) {
@@ -178,11 +177,22 @@ function requireDesktop(action: string): boolean {
 async function preview() {
   error.value = "";
   if (wechatMode.value) {
-    if (!requireDesktop("预览历史目录")) return;
+    if (!requireDesktop("查看篇数")) return;
+    if (!session.value?.saved) {
+      error.value = "还没有登录。请先完成步骤 1 和步骤 2。";
+      return;
+    }
     try {
-      const previewed = await previewWechatHistory(accountName.value, clampedHistoryLimit());
-      const sample = previewed.urls.slice(0, 6).join("\n");
-      previewText.value = sample ? `${previewed.sourceNote}\n${sample}` : previewed.sourceNote;
+      const previewed = await previewWechatHistory(accountName.value, historyLimitForRequest());
+      const shown = previewed.urls.slice(0, 6);
+      const rest = previewed.count - shown.length;
+      const lines = [`共 ${previewed.count} 篇。`];
+      if (shown.length) lines.push(shown.join("\n"));
+      if (rest > 0) lines.push(`还有 ${rest} 篇，开始归档时会一并保存。`);
+      if (previewed.sourceNote.includes("安全上限")) {
+        lines.push("已到单次安全上限，更早的文章这次不会继续拉。");
+      }
+      previewText.value = lines.join("\n");
       if (!accountName.value && previewed.accountName) accountName.value = previewed.accountName;
     } catch (err) {
       error.value = errorText(err);
@@ -258,7 +268,7 @@ async function openLoginWindow() {
   if (!requireDesktop("打开登录窗口")) return;
   try {
     await openWechatLoginWindow();
-    pageHint.value = "在新窗口里用微信扫码登录，然后打开一个你有权阅读的公众号「历史消息」。";
+    pageHint.value = "登录窗口已打开。用微信扫码，然后打开该公众号的「历史消息」。";
   } catch (err) {
     error.value = errorText(err);
   }
@@ -269,7 +279,8 @@ async function openLoginSite() {
   if (!requireDesktop("打开系统浏览器")) return;
   try {
     await openWechatLoginSite();
-    pageHint.value = "系统浏览器不会把 Cookie 交回应用。登录后请复制历史页地址；如果目录请求失败，再粘贴请求头里的 Cookie。";
+    pageHint.value =
+      "已打开系统浏览器。登录后把历史页地址贴到「高级：手动 Cookie」。浏览器里的 Cookie 不会自动回到应用。";
   } catch (err) {
     error.value = errorText(err);
   }
@@ -301,8 +312,8 @@ async function saveSession() {
     if (!accountName.value && saved.accountName) accountName.value = saved.accountName;
     if (saved.sourceUrl) pageUrl.value = saved.sourceUrl;
     pageHint.value = saved.hasCookie
-      ? "会话已保存。预览目录确认篇数后，就可以开始归档。"
-      : "地址已保存，但没有 Cookie。若预览失败，把请求头 Cookie 粘贴后再保存一次。";
+      ? "已保存。回到步骤 3，点「开始归档」。"
+      : "地址已保存，但没有 Cookie。打开「高级：手动 Cookie」，粘贴请求头里的一行后再保存一次。";
   } catch (err) {
     error.value = errorText(err);
   }
@@ -315,7 +326,7 @@ async function clearSession() {
     session.value = await clearWechatSession();
     cookieText.value = "";
     clearCookie.value = false;
-    pageHint.value = "本机会话已删除。";
+    pageHint.value = "已清除本机登录。";
   } catch (err) {
     error.value = errorText(err);
   }
@@ -341,7 +352,7 @@ async function run() {
     return;
   }
   if (wechatMode.value && !session.value?.saved) {
-    error.value = "请先保存微信网页会话。归档读取的是已保存的会话文件。";
+    error.value = "还没有登录。请先完成步骤 1 和步骤 2。";
     return;
   }
   running.value = true;
@@ -359,7 +370,7 @@ async function run() {
             accountId: accountId.value,
             linksText: linksText.value,
             linksPath: linksPath.value || null,
-            historyLimit: clampedHistoryLimit(),
+            historyLimit: historyLimitForRequest(),
             ...body,
           });
     phase.value = `完成：成功 ${report.value.succeeded}，失败 ${report.value.failed}`;
@@ -452,7 +463,7 @@ onUnmounted(() => {
     </header>
 
     <p v-if="!desktop" class="banner">
-      当前是浏览器预览：模式和公众号来源可以切换。登录、保存会话、抓取和写 book.md 需要在桌面窗口里运行。
+      当前是浏览器预览：可以切换模式，并查看公众号的三个步骤。登录、保存和归档需要在桌面窗口里运行。
     </p>
     <p v-if="error" class="banner bad" role="alert">{{ error }}</p>
 
@@ -461,9 +472,7 @@ onUnmounted(() => {
         <header class="card-head">
           <h2>{{ mode === "list" ? "链接列表" : "公众号" }}</h2>
           <p v-if="mode === 'list'">微信文章和普通网页可以混在一起。空行和 # 注释会跳过。</p>
-          <p v-else-if="wechatMode">
-            用你自己登录后的微信网页，拉取一个你有权阅读的公众号历史，再走同一套归档。
-          </p>
+          <p v-else-if="wechatMode">登录你自己的微信，把一个你能阅读的公众号历史收成一本书。</p>
           <p v-else-if="manualMode">导入你已经复制好的链接。不会登录微信。</p>
           <p v-else>{{ selectedProvider?.note }}</p>
         </header>
@@ -480,44 +489,46 @@ onUnmounted(() => {
             ></textarea>
           </label>
         </template>
-        <template v-else>
-          <label class="field">
-            <span>目录来源</span>
-            <select v-model="providerId" :disabled="running">
-              <option v-for="item in providers" :key="item.id" :value="item.id">
-                {{ item.name }}{{ item.available ? "" : "（未实现）" }}
-              </option>
-            </select>
-          </label>
-          <p class="note">{{ selectedProvider?.note }}</p>
 
-          <template v-if="wechatMode">
-            <div class="split">
-              <label class="field">
-                <span>合集名称</span>
-                <input v-model="accountName" type="text" :disabled="running" placeholder="例如：周末读完" />
-              </label>
-              <label class="field">
-                <span>最多篇数</span>
-                <input v-model.number="historyLimit" type="number" min="1" max="200" :disabled="running" />
-              </label>
+        <div v-else-if="wechatMode" class="steps">
+          <section class="step">
+            <h3>步骤 1 · 登录微信网页</h3>
+            <div class="step-actions">
+              <button type="button" class="primary" :disabled="running" @click="openLoginWindow">
+                在应用内打开登录页
+              </button>
+              <button type="button" class="linkish" :disabled="running" @click="openLoginSite">
+                用系统浏览器（高级）
+              </button>
             </div>
-            <label class="field">
-              <span>历史页地址</span>
-              <textarea
-                v-model="pageUrl"
-                rows="3"
-                spellcheck="false"
-                :disabled="running"
-                placeholder="登录后打开公众号「历史消息」，或公众平台的图文列表，再把地址栏粘到这里"
-                @change="describePage"
-              ></textarea>
-            </label>
+            <p class="tip">用微信扫码登录。</p>
+          </section>
+
+          <section class="step">
+            <h3>步骤 2 · 打开要归档的公众号历史</h3>
+            <p class="tip">
+              登录后打开该公众号的「历史消息」页面（地址栏通常带 __biz）。自己管理的号，打开图文列表也行。应用内窗口打开到正确页后，点「我已打开历史消息 · 保存」。
+            </p>
+            <button type="button" class="primary" :disabled="running" @click="saveSession">
+              我已打开历史消息 · 保存
+            </button>
+            <p v-if="pageHint" class="note">{{ pageHint }}</p>
             <details class="cookie-box">
-              <summary>Cookie（可选）</summary>
+              <summary>高级：手动 Cookie</summary>
               <p class="note">
-                应用内登录窗口会在保存时读取 Cookie，包括 HttpOnly。系统浏览器不会自动交回 Cookie。只粘贴请求头里的一行，不要换行。
+                应用内登录会自己带上 Cookie。只有改用系统浏览器、而且拉取失败时，才把历史页地址和请求头里的一行 Cookie 贴在这里。不要换行。
               </p>
+              <label class="field">
+                <span>历史页地址</span>
+                <textarea
+                  v-model="pageUrl"
+                  rows="3"
+                  spellcheck="false"
+                  :disabled="running"
+                  placeholder="应用内打开到历史消息后会自动填入。系统浏览器请粘贴地址栏。"
+                  @change="describePage"
+                ></textarea>
+              </label>
               <textarea
                 v-model="cookieText"
                 rows="3"
@@ -530,97 +541,181 @@ onUnmounted(() => {
                 清除已保存的 Cookie
               </label>
             </details>
-            <p class="note">{{ sessionLine }}</p>
-            <p v-if="session?.path" class="note">会话文件 {{ session.path }}</p>
-            <p v-if="pageHint" class="note">{{ pageHint }}</p>
-          </template>
+          </section>
 
-          <template v-else-if="manualMode">
-            <div class="split">
-              <label class="field">
-                <span>合集名称</span>
-                <input v-model="accountName" type="text" :disabled="running" placeholder="例如：周末读完" />
+          <section class="step">
+            <h3>步骤 3 · 拉取全部文章并归档</h3>
+            <p class="session-line">
+              {{ sessionLine }}
+              <button
+                v-if="session?.saved"
+                type="button"
+                class="linkish"
+                :disabled="running"
+                @click="clearSession"
+              >
+                清除登录
+              </button>
+            </p>
+            <div class="choice" role="radiogroup" aria-label="拉取范围">
+              <label>
+                <input v-model="fetchAll" type="radio" :value="true" :disabled="running" />
+                全部文章
               </label>
-              <label class="field">
-                <span>标识（可选）</span>
-                <input v-model="accountId" type="text" :disabled="running" placeholder="留给以后的目录来源" />
+              <label>
+                <input v-model="fetchAll" type="radio" :value="false" :disabled="running" />
+                仅最近
+                <input
+                  v-model.number="historyLimit"
+                  class="narrow"
+                  :class="{ idle: fetchAll }"
+                  type="number"
+                  min="1"
+                  :max="SAFETY_MAX_ARTICLES"
+                  :disabled="running"
+                  aria-label="最近篇数"
+                  @focus="chooseRecent"
+                  @input="chooseRecent"
+                />
+                篇
               </label>
             </div>
+            <p class="tip">选「全部文章」会一直翻到没有更多为止，单次最多 {{ SAFETY_MAX_ARTICLES }} 篇。</p>
             <label class="field">
-              <span>链接</span>
-              <textarea
-                v-model="linksText"
-                rows="7"
-                spellcheck="false"
-                :disabled="running"
-                placeholder="每行一条，或从文件导入"
-              ></textarea>
+              <span>输出目录</span>
+              <div class="path-row">
+                <input v-model="outputDir" type="text" :disabled="running" placeholder="选择保存 book.md 的文件夹" />
+                <button type="button" class="ghost" :disabled="running" @click="browseOutput">选择</button>
+              </div>
             </label>
-            <p v-if="linksPath" class="note">将读取文件：{{ linksPath }}</p>
-          </template>
-          <p v-else class="note">这个来源不能开始归档。请改用微信网页会话或手动链接。</p>
+            <details>
+              <summary>书名和导出选项</summary>
+              <div class="split">
+                <label class="field">
+                  <span>书名</span>
+                  <input v-model="bookTitle" type="text" :disabled="running" placeholder="留空则用公众号名称" />
+                </label>
+                <label class="field">
+                  <span>署名</span>
+                  <input v-model="bookAuthor" type="text" :disabled="running" placeholder="个人归档" />
+                </label>
+              </div>
+              <div class="checks">
+                <label><input v-model="exportEpub" type="checkbox" :disabled="running" /> 导出 EPUB</label>
+                <label><input v-model="localizeImages" type="checkbox" :disabled="running" /> 下载图片到本地</label>
+                <label><input v-model="stripTracking" type="checkbox" :disabled="running" /> 去掉追踪参数</label>
+                <label><input v-model="useCache" type="checkbox" :disabled="running" /> 使用本地缓存</label>
+              </div>
+              <div class="split three">
+                <label class="field">
+                  <span>并发</span>
+                  <input v-model.number="concurrency" type="number" min="1" max="6" :disabled="running" />
+                </label>
+                <label class="field">
+                  <span>失败重试</span>
+                  <input v-model.number="retries" type="number" min="0" max="5" :disabled="running" />
+                </label>
+                <label class="field">
+                  <span>间隔（毫秒）</span>
+                  <input v-model.number="delayMs" type="number" min="0" max="10000" step="100" :disabled="running" />
+                </label>
+              </div>
+            </details>
+            <button type="button" class="primary block" :disabled="runDisabled" @click="run">
+              {{ running ? "正在归档…" : "开始归档" }}
+            </button>
+            <div class="step-actions">
+              <button type="button" class="ghost" :disabled="running" @click="preview">先看看有多少篇</button>
+            </div>
+            <p v-if="previewText" class="note preview-block">{{ previewText }}</p>
+          </section>
+
+          <p class="switch-line">
+            <button type="button" class="linkish" :disabled="running" @click="providerId = 'manual'">
+              改用手动粘贴链接
+            </button>
+          </p>
+        </div>
+
+        <template v-else-if="manualMode">
+          <p class="switch-line">
+            <button type="button" class="linkish" :disabled="running" @click="providerId = 'wechat-web'">
+              返回微信网页登录
+            </button>
+          </p>
+          <label class="field">
+            <span>合集名称</span>
+            <input v-model="accountName" type="text" :disabled="running" placeholder="例如：周末读完" />
+          </label>
+          <label class="field">
+            <span>链接</span>
+            <textarea
+              v-model="linksText"
+              rows="7"
+              spellcheck="false"
+              :disabled="running"
+              placeholder="每行一条，或从文件导入"
+            ></textarea>
+          </label>
+          <p v-if="linksPath" class="note">将读取文件：{{ linksPath }}</p>
         </template>
+        <p v-else class="note">这个来源不能开始归档。请改用微信网页会话或手动链接。</p>
 
         <div v-if="mode === 'list' || manualMode" class="row-actions">
           <button type="button" class="ghost" :disabled="running" @click="browseLinks">从文件导入</button>
           <button type="button" class="ghost" :disabled="running" @click="preview">识别链接</button>
           <input ref="fileInput" class="hidden" type="file" accept=".txt,.md,.csv,text/plain" @change="onLocalFile" />
         </div>
-        <div v-else-if="wechatMode" class="row-actions">
-          <button type="button" class="ghost" :disabled="running" @click="openLoginWindow">在应用内打开登录页</button>
-          <button type="button" class="ghost" :disabled="running" @click="openLoginSite">用系统浏览器打开</button>
-          <button type="button" class="ghost" :disabled="running" @click="saveSession">保存会话</button>
-          <button type="button" class="ghost" :disabled="running" @click="clearSession">清除会话</button>
-          <button type="button" class="ghost" :disabled="running" @click="preview">预览目录</button>
-        </div>
-        <p v-if="previewText" class="note preview-block">{{ previewText }}</p>
+        <p v-if="previewText && !wechatMode" class="note preview-block">{{ previewText }}</p>
 
-        <div class="split">
-          <label class="field">
-            <span>书名</span>
-            <input v-model="bookTitle" type="text" :disabled="running" placeholder="留空则用今天的日期" />
-          </label>
-          <label class="field">
-            <span>署名</span>
-            <input v-model="bookAuthor" type="text" :disabled="running" placeholder="个人归档" />
-          </label>
-        </div>
-        <label class="field">
-          <span>输出目录</span>
-          <div class="path-row">
-            <input v-model="outputDir" type="text" :disabled="running" placeholder="选择保存 book.md 的文件夹" />
-            <button type="button" class="ghost" :disabled="running" @click="browseOutput">选择</button>
-          </div>
-        </label>
-
-        <div class="checks">
-          <label><input v-model="exportEpub" type="checkbox" :disabled="running" /> 导出 EPUB</label>
-          <label><input v-model="localizeImages" type="checkbox" :disabled="running" /> 下载图片到本地</label>
-          <label><input v-model="stripTracking" type="checkbox" :disabled="running" /> 去掉追踪参数</label>
-          <label><input v-model="useCache" type="checkbox" :disabled="running" /> 使用本地缓存</label>
-        </div>
-
-        <details>
-          <summary>速度和重试</summary>
-          <div class="split three">
+        <template v-if="!wechatMode">
+          <div class="split">
             <label class="field">
-              <span>并发</span>
-              <input v-model.number="concurrency" type="number" min="1" max="6" :disabled="running" />
+              <span>书名</span>
+              <input v-model="bookTitle" type="text" :disabled="running" placeholder="留空则用今天的日期" />
             </label>
             <label class="field">
-              <span>失败重试</span>
-              <input v-model.number="retries" type="number" min="0" max="5" :disabled="running" />
-            </label>
-            <label class="field">
-              <span>间隔（毫秒）</span>
-              <input v-model.number="delayMs" type="number" min="0" max="10000" step="100" :disabled="running" />
+              <span>署名</span>
+              <input v-model="bookAuthor" type="text" :disabled="running" placeholder="个人归档" />
             </label>
           </div>
-        </details>
+          <label class="field">
+            <span>输出目录</span>
+            <div class="path-row">
+              <input v-model="outputDir" type="text" :disabled="running" placeholder="选择保存 book.md 的文件夹" />
+              <button type="button" class="ghost" :disabled="running" @click="browseOutput">选择</button>
+            </div>
+          </label>
 
-        <button type="button" class="primary" :disabled="runDisabled" @click="run">
-          {{ running ? "正在归档…" : "开始归档" }}
-        </button>
+          <div class="checks">
+            <label><input v-model="exportEpub" type="checkbox" :disabled="running" /> 导出 EPUB</label>
+            <label><input v-model="localizeImages" type="checkbox" :disabled="running" /> 下载图片到本地</label>
+            <label><input v-model="stripTracking" type="checkbox" :disabled="running" /> 去掉追踪参数</label>
+            <label><input v-model="useCache" type="checkbox" :disabled="running" /> 使用本地缓存</label>
+          </div>
+
+          <details>
+            <summary>速度和重试</summary>
+            <div class="split three">
+              <label class="field">
+                <span>并发</span>
+                <input v-model.number="concurrency" type="number" min="1" max="6" :disabled="running" />
+              </label>
+              <label class="field">
+                <span>失败重试</span>
+                <input v-model.number="retries" type="number" min="0" max="5" :disabled="running" />
+              </label>
+              <label class="field">
+                <span>间隔（毫秒）</span>
+                <input v-model.number="delayMs" type="number" min="0" max="10000" step="100" :disabled="running" />
+              </label>
+            </div>
+          </details>
+
+          <button type="button" class="primary" :disabled="runDisabled" @click="run">
+            {{ running ? "正在归档…" : "开始归档" }}
+          </button>
+        </template>
       </section>
 
       <ProgressCard :rows="rows" :phase="phase" :running="running" :report="report" @open="openDir" />
@@ -634,7 +729,7 @@ onUnmounted(() => {
         </button>
         <span v-if="updateMessage">{{ updateMessage }}</span>
       </p>
-      <p>只保存你有权阅读的文章。ArticleBook 不绕过付费墙，也不批量抓取公众号。</p>
+      <p>只归档你登录后有权阅读的那一个公众号，默认拉取它的全部历史。不绕过付费墙，也不会抓取你打不开的号。</p>
       <p v-if="paths">日志 {{ paths.logDir }} · 缓存 {{ paths.cacheDir }}</p>
     </footer>
   </div>

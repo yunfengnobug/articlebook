@@ -2,6 +2,7 @@ use crate::error::EngineError;
 use crate::fetch::decode_text_bytes;
 use crate::history::{
     collect_history, history_limit_or_default, load_session, HistoryClient, ReqwestHistoryClient,
+    SAFETY_MAX_ARTICLES,
 };
 use async_trait::async_trait;
 use serde::Serialize;
@@ -141,14 +142,18 @@ impl AccountProvider for WechatWebProvider {
             .map(|entry| entry.url.as_str())
             .collect::<Vec<_>>()
             .join("\n");
+        let mut source_note = format!(
+            "目录来自你保存的微信网页会话（{}），共 {} 篇。没有调用 WMPF 或 Frida。",
+            session.kind.label(),
+            entries.len()
+        );
+        if request.history_limit == 0 && entries.len() >= SAFETY_MAX_ARTICLES {
+            source_note.push_str("已达到单次安全上限，更早的文章没有继续拉取。");
+        }
         Ok(ProviderListing {
             account_name,
             urls_text,
-            source_note: format!(
-                "目录来自你保存的微信网页会话（{}），共 {} 篇。没有调用 WMPF 或 Frida。",
-                session.kind.label(),
-                entries.len()
-            ),
+            source_note,
         })
     }
 }
@@ -180,7 +185,7 @@ pub fn describe_providers() -> Vec<ProviderInfo> {
             id: "wechat-web".into(),
             name: "微信网页会话".into(),
             available: true,
-            note: "用你自己登录后的微信网页，拉取一个你有权阅读的公众号历史目录。不会调用 Frida 或 WMPF，也不会伪装微信客户端。".into(),
+            note: "用你自己登录后的微信网页，拉取一个你有权阅读的公众号的全部历史。单次有安全上限。不会调用 Frida 或 WMPF，也不会伪装微信客户端。".into(),
         },
         ProviderInfo {
             id: "manual".into(),

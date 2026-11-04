@@ -216,7 +216,7 @@ ArticleBook 命令行（个人阅读归档）
   articlebook-cli history-parse fixtures/wechat_history_getmsg.json
 
 只归档你有权保存的链接。history-parse 只解析离线目录样例，不会登录。
-桌面版的「微信网页会话」用你自己打开的历史消息页或公众平台图文列表拉取目录。
+桌面版的公众号模式用你自己打开的历史消息页或公众平台图文列表，默认拉取该号的全部历史（单次最多 5000 篇、1000 页）。
 不会调用 WMPF / Frida，也不会伪装微信客户端。
 数据目录：CLI 使用系统的 ArticleBook 数据/缓存目录；桌面版使用 Tauri 应用目录。
 "
