@@ -5,6 +5,8 @@
 # Node / Vite
 node_modules/
 dist/
+package-lock.json
+yarn.lock
 dist-ssr/
 *.local
 
