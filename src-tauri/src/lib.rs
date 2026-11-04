@@ -18,6 +18,7 @@ pub struct AppState {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let log_dir = app.path().app_log_dir()?;
             let data_dir = app.path().app_data_dir()?;
@@ -50,6 +51,8 @@ pub fn run() {
             commands::open_wechat_login_window,
             commands::open_wechat_login_site,
             commands::preview_wechat_history,
+            commands::check_for_update,
+            commands::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -32,6 +32,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc0NTE5QjFEMUU1RjE5MDAKUldRQUdWOGVIWnRSZERMRUExc2VzWmpiRE5Oa00rYzA0SFR4Ny9jNjVzbjNvZWFaeEhka0x1bnAK",
+      "endpoints": [
+        "https://github.com/yunfengnobug/articlebook/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

@@ -2,3 +2,5 @@
 *.png binary
 *.ico binary
 *.icns binary
+signing/articlebook.key -text
+signing/articlebook.key.pub -text

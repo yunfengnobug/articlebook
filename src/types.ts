@@ -103,6 +103,12 @@ export interface ExportSettings {
   useCache: boolean;
 }
 
+export interface UpdateStatus {
+  available: boolean;
+  version: string;
+  message: string;
+}
+
 export interface ProgressRow {
   index: number;
   total: number;

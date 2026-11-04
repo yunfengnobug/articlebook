@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_updater::UpdaterExt;
 
 const WECHAT_LOGIN_LABEL: &str = "wechat-login";
 const WECHAT_LOGIN_SITE: &str = "https://mp.weixin.qq.com/";
@@ -427,6 +428,58 @@ async fn read_mp_cookie(window: tauri::WebviewWindow) -> Result<String, String> 
     .map_err(|err| format!("读取登录窗口 Cookie 失败：{err}"))?
     .map_err(|err| format!("读取登录窗口 Cookie 失败：{err}"))?;
     Ok(cookie_header(&cookies))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    pub available: bool,
+    pub version: String,
+    pub message: String,
+}
+
+#[tauri::command]
+pub async fn check_for_update(app: AppHandle) -> Result<UpdateStatus, String> {
+    let update = app
+        .updater()
+        .map_err(|err| err.to_string())?
+        .check()
+        .await
+        .map_err(|err| err.to_string())?;
+    match update {
+        Some(update) => {
+            let version = update.version.clone();
+            Ok(UpdateStatus {
+                available: true,
+                version: version.clone(),
+                message: format!(
+                    "发现新版本 {version}。下载安装后，Windows 会退出应用并完成安装。"
+                ),
+            })
+        }
+        None => Ok(UpdateStatus {
+            available: false,
+            version: String::new(),
+            message: "已是最新版本。".into(),
+        }),
+    }
+}
+
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    let Some(update) = app
+        .updater()
+        .map_err(|err| err.to_string())?
+        .check()
+        .await
+        .map_err(|err| err.to_string())?
+    else {
+        return Err("没有可安装的更新。".into());
+    };
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|err| err.to_string())
 }
 
 fn cookie_header(cookies: &[tauri::webview::Cookie<'static>]) -> String {

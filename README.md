@@ -115,32 +115,46 @@ cargo run -p articlebook-engine --bin articlebook-cli -- history-parse \
 
 ## Windows 打包
 
-本机需要 Visual Studio 的 C++ 生成工具、WebView2、Rust 和 Node。在仓库根目录：
+本机需要 Visual Studio 的 C++ 生成工具、WebView2、Rust 和 Node。`createUpdaterArtifacts` 打开之后，打包必须能读到私钥，否则 Tauri 会在签名步骤失败。不要设置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，这把密钥没有密码。
 
-```bash
+Windows PowerShell：
+
+```powershell
 npm install
+$env:TAURI_SIGNING_PRIVATE_KEY = (Resolve-Path .\signing\articlebook.key)
 npm run tauri build -- --bundles nsis
 ```
 
-安装包在 `src-tauri/target/release/bundle/nsis/`。
+macOS / Linux：
+
+```bash
+npm install
+TAURI_SIGNING_PRIVATE_KEY="$PWD/signing/articlebook.key" npm run tauri build -- --bundles nsis
+```
+
+这个仓库是 Cargo workspace，安装包在仓库根目录的 `target/release/bundle/nsis/`，不在 `src-tauri/target/`。签名成功时，旁边还有同名 `.sig`。
 
 GitHub Actions 只在 `windows-latest` 上构建，触发方式是打 `v*` 标签或手动 `workflow_dispatch`。工作流文件是 `.github/workflows/build-windows.yml`。标签构建会额外上传一个草稿 Release；手动运行只上传构建产物。没有 macOS 或 Linux 的发布任务。
 
 正文提取是纯 Rust，安装包不附带 Python。如果以后某种页面必须用 Python 解析，可以把解释器放到 `src-tauri/binaries/<name>-<target-triple>`，在 `tauri.conf.json` 的 `bundle.externalBin` 里声明，由 Tauri 打进 Windows 包，再由命令启动。当前没有这条路径。
 
-## 自动更新（TODO）
+## 自动更新
 
-当前 **未接入** Tauri Updater。`v*` 标签会构建 NSIS 安装包并生成草稿 Release，但应用不会检查更新。
+Windows NSIS 安装包由 Tauri 2 updater 签名。公钥写在 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`，客户端用它校验下载的安装包。页脚有「检查更新」。桌面窗口启动时也会静默查一次；有新版本时再点「下载并安装」。Windows 上安装程序启动后应用会退出。
 
-后续若要接 GitHub Releases 自动更新，大致需要：
+更新清单地址是 `https://github.com/yunfengnobug/articlebook/releases/latest/download/latest.json`。
 
-1. 生成本地签名密钥：`npm run tauri -- signer generate -w ~/.tauri/articlebook.key`
-2. 把 **公钥** 写入 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`；**私钥** 只放进 GitHub Actions secrets（如 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`），不要提交仓库
-3. 依赖：`tauri-plugin-updater`（Rust）与 `@tauri-apps/plugin-updater`（前端）；在 `lib.rs` 里 `.plugin(tauri_plugin_updater::Builder::new().build())`
-4. 配置 `plugins.updater.endpoints` 指向本仓库的 latest.json，例如 `https://github.com/yunfengnobug/articlebook/releases/latest/download/latest.json`（需在发布流水线生成并随 Release 上传 `.sig` 与 `latest.json`）
-5. 扩展 `.github/workflows/build-windows.yml`：构建后用私钥签名安装包，上传 `*.exe`、`*.sig` 与 updater 清单；正式发布后再从草稿 Release 发布
+签名密钥在 `signing/`，说明见 `signing/README.md`：
 
-在密钥与 secrets 就绪之前，不要半接入 updater（缺少 pubkey / endpoint 会导致构建或运行失败）。
+- `signing/articlebook.key`：私钥，故意放在这个私有仓库里，密码为空
+- `signing/articlebook.key.pub`：公钥
+- GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY` 是同一把私钥的备份
+
+`.github/workflows/build-windows.yml` 打包时优先把 `TAURI_SIGNING_PRIVATE_KEY` 指到 `signing/articlebook.key`，文件不存在才用 secret。工作流不设置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。Actions 环境里 `CI=true`，Tauri 会把缺省密码当成空字符串。
+
+`bundle.createUpdaterArtifacts` 为 `true` 时，Tauri 2 直接给 NSIS 安装包签名，产物是 `*-setup.exe` 和 `*-setup.exe.sig`，不是 v1 的 `.nsis.zip`。`v*` 标签构建还会在同一目录写 `latest.json`：`version` 用应用版本，`windows-x86_64` 和 `windows-x86_64-nsis` 都指向这个安装包，`signature` 是 `.sig` 文件的内容。草稿 Release 会带上安装包、`.sig` 和 `latest.json`。把草稿发布之后，`releases/latest` 才会把这份清单交给已安装的客户端。应用版本必须高于正在运行的版本，客户端才会安装；当前版本仍是 `0.1.0`。
+
+仓库仍是私有时，没有登录的客户端访问 GitHub Release 下载地址会得到 404。自动更新要等仓库公开，或改成客户端能够匿名下载的地址。
 
 ## 布局
 
@@ -150,6 +164,7 @@ src-tauri/                    Tauri 2 命令，转调引擎
 crates/articlebook-engine/    抓取、提取、组书、EPUB、缓存
 fixtures/                     离线 HTML 样例
 .github/workflows/            仅 Windows 的安装包构建
+signing/                      updater 签名密钥（私钥故意留在本私有仓库）
 ```
 
 ## 还没做
@@ -160,4 +175,3 @@ fixtures/                     离线 HTML 样例
 - 付费墙、批量抓取你没有阅读权限的公众号
 - PDF
 - macOS / Linux 安装包
-- 基于 GitHub Releases 的 Tauri 自动更新（缺签名密钥与 Actions secrets；见上文「自动更新」）
