@@ -175,6 +175,8 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .titles span { color: #6e655c; }
 .failures { color: #7c2222; }
 footer { margin-top: 18px; display: flex; flex-direction: column; gap: 4px; }
+.update-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.update-row .ghost { padding: 4px 12px; font-size: 13px; }
 
 @media (max-width: 860px) {
   .top, main, .split, .split.three { display: flex; flex-direction: column; }

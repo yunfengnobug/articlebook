@@ -10,6 +10,7 @@ import type {
   ProgressEvent,
   ProviderInfo,
   SessionSummary,
+  UpdateStatus,
   WechatPageEvent,
 } from "./types";
 
@@ -116,6 +117,14 @@ export async function openWechatLoginWindow(): Promise<void> {
 
 export async function openWechatLoginSite(): Promise<void> {
   await invoke("open_wechat_login_site");
+}
+
+export async function checkForUpdate(): Promise<UpdateStatus> {
+  return invoke<UpdateStatus>("check_for_update");
+}
+
+export async function installAppUpdate(): Promise<void> {
+  await invoke("install_update");
 }
 
 export async function previewWechatHistory(

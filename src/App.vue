@@ -18,6 +18,8 @@ import {
   loadWechatSession,
   openOutput,
   openWechatLoginSite,
+  checkForUpdate,
+  installAppUpdate,
   openWechatLoginWindow,
   previewLinks,
   previewWechatHistory,
@@ -90,6 +92,9 @@ const phase = ref("");
 const rows = ref<ProgressRow[]>([]);
 const report = ref<JobReport | null>(null);
 const paths = ref<AppPaths | null>(null);
+const updateBusy = ref(false);
+const updateAvailable = ref(false);
+const updateMessage = ref("");
 const fileInput = ref<HTMLInputElement | null>(null);
 let unlistenProgress: (() => void) | null = null;
 let unlistenPage: (() => void) | null = null;
@@ -365,6 +370,38 @@ async function run() {
   }
 }
 
+async function checkUpdates(interactive: boolean) {
+  if (!desktop.value) {
+    if (interactive) updateMessage.value = "检查更新需要在桌面窗口里运行。";
+    return;
+  }
+  updateBusy.value = true;
+  try {
+    const status = await checkForUpdate();
+    updateAvailable.value = status.available;
+    if (interactive || status.available) updateMessage.value = status.message;
+  } catch (err) {
+    updateAvailable.value = false;
+    if (interactive) updateMessage.value = errorText(err);
+  } finally {
+    updateBusy.value = false;
+  }
+}
+
+async function onInstallUpdate() {
+  if (!desktop.value) return;
+  updateBusy.value = true;
+  updateMessage.value = "正在下载更新。Windows 上安装开始后应用会退出。";
+  try {
+    await installAppUpdate();
+    updateMessage.value = "更新已安装。";
+  } catch (err) {
+    updateMessage.value = errorText(err);
+  } finally {
+    updateBusy.value = false;
+  }
+}
+
 async function openDir() {
   if (!report.value) return;
   try {
@@ -392,6 +429,7 @@ onMounted(async () => {
   } catch (err) {
     error.value = errorText(err);
   }
+  await checkUpdates(false);
 });
 
 onUnmounted(() => {
@@ -589,6 +627,13 @@ onUnmounted(() => {
     </main>
 
     <footer>
+      <p class="update-row">
+        <button type="button" class="ghost" :disabled="updateBusy" @click="checkUpdates(true)">检查更新</button>
+        <button v-if="updateAvailable" type="button" class="ghost" :disabled="updateBusy" @click="onInstallUpdate">
+          下载并安装
+        </button>
+        <span v-if="updateMessage">{{ updateMessage }}</span>
+      </p>
       <p>只保存你有权阅读的文章。ArticleBook 不绕过付费墙，也不批量抓取公众号。</p>
       <p v-if="paths">日志 {{ paths.logDir }} · 缓存 {{ paths.cacheDir }}</p>
     </footer>
