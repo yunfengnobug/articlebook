@@ -1,6 +1,6 @@
 [package]
 name = "articlebook"
-version = "0.1.2"
+version = "0.1.3"
 description = "Personal desktop archive for web and WeChat articles"
 authors = ["ArticleBook"]
 edition = "2021"
