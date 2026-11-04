@@ -1,9 +1,12 @@
 use crate::book::draft_from_articles;
 use crate::epub::{epub_mimetype, write_epub};
 use crate::extract::{extract_html, source_hint_from_html};
-use crate::fetch::{Fetched, HttpClient};
+use crate::fetch::{Fetched, HttpClient, USER_AGENT};
+use crate::history::{save_session, session_from_page_url, HistoryClient};
 use crate::pipeline::{export_urls, ExportOptions, NullSink};
-use crate::provider::{provider_by_id, AccountRequest};
+use crate::provider::{
+    describe_providers, provider_by_id, AccountProvider, AccountRequest, WechatWebProvider,
+};
 use crate::urlutil::{normalize_url, parse_url_list, NormalizeOptions};
 use crate::EngineError;
 use async_trait::async_trait;
@@ -423,34 +426,64 @@ async fn pipeline_localizes_images_into_the_book() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn wait<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(future)
+}
+
+fn blank_account(name: &str, links: &str, file: Option<PathBuf>) -> AccountRequest {
+    AccountRequest {
+        account_id: String::new(),
+        account_name: name.into(),
+        links_text: links.into(),
+        links_file: file,
+        session_file: None,
+        history_limit: 0,
+    }
+}
+
 #[test]
 fn manual_provider_reads_a_links_file_and_wmpf_stays_unavailable() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/sample-links.txt");
-    let listing = provider_by_id("manual")
-        .unwrap()
-        .list_links(&AccountRequest {
-            account_id: String::new(),
-            account_name: "示例合集".into(),
-            links_text: String::new(),
-            links_file: Some(path),
-        })
-        .unwrap();
+    let listing = wait(provider_by_id("manual").unwrap().list_links(&blank_account(
+        "示例合集",
+        "",
+        Some(path),
+    )))
+    .unwrap();
     assert_eq!(listing.account_name, "示例合集");
     assert!(listing.urls_text.contains("https://example.com/posts/one"));
     let parsed = parse_url_list(&listing.urls_text, &NormalizeOptions::default());
     assert_eq!(parsed.duplicates, 1);
     assert!(parsed.urls.iter().any(|url| url.contains("__biz=MzTest")));
     assert!(parsed.urls.iter().all(|url| !url.contains("scene=")));
-    let err = provider_by_id("wmpf")
-        .unwrap()
-        .list_links(&AccountRequest {
-            account_id: String::new(),
-            account_name: String::new(),
-            links_text: "https://example.com".into(),
-            links_file: None,
-        })
-        .unwrap_err();
+    let err = wait(provider_by_id("wmpf").unwrap().list_links(&blank_account(
+        "",
+        "https://example.com",
+        None,
+    )))
+    .unwrap_err();
     assert!(err.to_string().contains("WMPF"), "{err}");
+    let described = describe_providers();
+    assert!(described
+        .iter()
+        .any(|item| item.id == "wechat-web" && item.available));
+    assert!(described
+        .iter()
+        .any(|item| item.id == "manual" && item.available));
+    assert!(described
+        .iter()
+        .any(|item| item.id == "wmpf" && !item.available && item.note.contains("Frida")));
+    let missing = wait(
+        provider_by_id("wechat-web")
+            .unwrap()
+            .list_links(&blank_account("", "", None)),
+    )
+    .unwrap_err();
+    assert!(missing.to_string().contains("会话"), "{missing}");
 }
 
 #[test]
@@ -464,4 +497,129 @@ fn windows_workflow_ships_windows_only() {
     let lower = text.to_ascii_lowercase();
     assert!(!lower.contains("macos"));
     assert!(!lower.contains("ubuntu"));
+}
+
+struct SeqHistory {
+    bodies: Mutex<Vec<String>>,
+    seen: Mutex<Vec<(String, String, String)>>,
+}
+
+#[async_trait]
+impl HistoryClient for SeqHistory {
+    async fn get_text(
+        &self,
+        url: &str,
+        cookie: &str,
+        user_agent: &str,
+        referer: &str,
+    ) -> Result<String, EngineError> {
+        assert!(url.starts_with("https://mp.weixin.qq.com/"), "{url}");
+        assert_eq!(user_agent, USER_AGENT);
+        assert!(!user_agent.contains("MicroMessenger"));
+        assert!(referer.starts_with("https://mp.weixin.qq.com/"));
+        self.seen.lock().expect("seen").push((
+            url.to_string(),
+            cookie.to_string(),
+            referer.to_string(),
+        ));
+        let mut bodies = self.bodies.lock().expect("bodies");
+        if bodies.is_empty() {
+            return Err(EngineError::Fetch("没有更多目录页".into()));
+        }
+        Ok(bodies.remove(0))
+    }
+}
+
+fn wechat_html(title: &str) -> String {
+    format!(
+        "<div id=\"activity-name\">{title}</div><div id=\"js_name\">示例</div><div id=\"js_content\"><p>这是一篇用于离线测试的微信文章正文，不应该依赖网络。再补一句让正文长度稳定通过提取。</p></div>"
+    )
+}
+
+#[tokio::test]
+async fn wechat_web_history_fixture_lists_then_exports() {
+    let dir = scratch();
+    let session = session_from_page_url(
+        "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzFixture&uin=777&key=abc&pass_ticket=pt",
+        "wap_sid2=test",
+        "示例号",
+    )
+    .unwrap();
+    let session_path = dir.join("wechat-web-session.json");
+    save_session(&session_path, &session).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&session_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "session file should not be group/world readable"
+        );
+    }
+    let stored = std::fs::read_to_string(&session_path).unwrap();
+    stored_contains_cookie(&stored);
+    let client = Arc::new(SeqHistory {
+        bodies: Mutex::new(vec![
+            fixture("wechat_history_getmsg.json"),
+            fixture("wechat_history_getmsg_page2.json"),
+        ]),
+        seen: Mutex::new(Vec::new()),
+    });
+    let provider = WechatWebProvider::with_client(
+        Arc::clone(&client) as Arc<dyn HistoryClient>,
+        std::time::Duration::ZERO,
+    );
+    let mut request = blank_account("", "", None);
+    request.session_file = Some(session_path);
+    request.history_limit = 20;
+    let listing = provider.list_links(&request).await.unwrap();
+    assert_eq!(listing.account_name, "示例号");
+    assert!(listing.source_note.contains("历史消息"));
+    assert!(!listing.source_note.contains("wap_sid2"));
+    let urls = parse_url_list(&listing.urls_text, &NormalizeOptions::default()).urls;
+    assert_eq!(urls.len(), 3, "{urls:?}");
+    let seen = client.seen.lock().expect("seen");
+    assert_eq!(seen.len(), 2);
+    assert!(seen[0].0.contains("offset=0"));
+    assert!(seen[1].0.contains("offset=1"), "{}", seen[1].0);
+    assert_eq!(seen[0].1, "wap_sid2=test");
+    drop(seen);
+
+    let mut pages = HashMap::new();
+    let titles = ["把长文收成一本小书", "第二篇", "周末把收藏夹读完"];
+    for (url, title) in urls.iter().zip(titles) {
+        pages.insert(
+            url.clone(),
+            vec![Ok(Fetched {
+                status: 200,
+                content_type: "text/html".into(),
+                body: wechat_html(title).into_bytes(),
+                final_url: url.clone(),
+            })],
+        );
+    }
+    let report = export_urls(
+        &listing.urls_text,
+        opts(&dir),
+        Arc::new(ScriptedClient::new(pages)),
+        Arc::new(NullSink),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.succeeded, 3, "{:?}", report.failures);
+    let book = std::fs::read_to_string(&report.book_markdown).unwrap();
+    assert!(book.contains("把长文收成一本小书"), "{book}");
+    assert!(book.contains("第二篇"), "{book}");
+    assert!(book.contains("周末把收藏夹读完"), "{book}");
+    assert!(book.find("把长文收成一本小书").unwrap() < book.find("第二篇").unwrap());
+    assert!(book.find("第二篇").unwrap() < book.find("周末把收藏夹读完").unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn stored_contains_cookie(stored: &str) {
+    assert!(stored.contains("wap_sid2=test"), "{stored}");
 }

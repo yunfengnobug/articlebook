@@ -1,0 +1,7 @@
+{
+  "ret": 0,
+  "errmsg": "ok",
+  "msg_count": 1,
+  "can_msg_continue": 0,
+  "general_msg_list": "{\"list\":[{\"comm_msg_info\":{\"datetime\":1740000000,\"type\":49},\"app_msg_ext_info\":{\"title\":\"周末把收藏夹读完\",\"content_url\":\"http://mp.weixin.qq.com/s?__biz=MzFixture&amp;mid=11&amp;idx=1&amp;sn=ccc&amp;scene=0\"}}]}"
+}

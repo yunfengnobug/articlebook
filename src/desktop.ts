@@ -1,7 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { AppPaths, JobReport, ParsedUrls, ProgressEvent, ProviderInfo } from "./types";
+import type {
+  AppPaths,
+  HistoryPreview,
+  JobReport,
+  PageHint,
+  ParsedUrls,
+  ProgressEvent,
+  ProviderInfo,
+  SessionSummary,
+  WechatPageEvent,
+} from "./types";
 
 export function inTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -73,6 +83,46 @@ export async function openOutput(path: string): Promise<void> {
 
 export function listenProgress(handler: (event: ProgressEvent) => void): Promise<UnlistenFn> {
   return listen<ProgressEvent>("job-progress", (event) => handler(event.payload));
+}
+
+export function listenWechatPage(handler: (event: WechatPageEvent) => void): Promise<UnlistenFn> {
+  return listen<WechatPageEvent>("wechat-page", (event) => handler(event.payload));
+}
+
+export async function describeWechatPage(url: string): Promise<PageHint> {
+  return invoke<PageHint>("describe_wechat_page_url", { url });
+}
+
+export async function loadWechatSession(): Promise<SessionSummary> {
+  return invoke<SessionSummary>("load_wechat_session");
+}
+
+export async function saveWechatSession(req: {
+  pageUrl: string;
+  cookie: string;
+  accountName: string;
+  clearCookie: boolean;
+}): Promise<SessionSummary> {
+  return invoke<SessionSummary>("save_wechat_session", { req });
+}
+
+export async function clearWechatSession(): Promise<SessionSummary> {
+  return invoke<SessionSummary>("clear_wechat_session");
+}
+
+export async function openWechatLoginWindow(): Promise<void> {
+  await invoke("open_wechat_login_window");
+}
+
+export async function openWechatLoginSite(): Promise<void> {
+  await invoke("open_wechat_login_site");
+}
+
+export async function previewWechatHistory(
+  accountName: string,
+  historyLimit: number,
+): Promise<HistoryPreview> {
+  return invoke<HistoryPreview>("preview_wechat_history", { accountName, historyLimit });
 }
 
 function onePath(value: unknown): string | null {

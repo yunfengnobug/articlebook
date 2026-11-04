@@ -58,6 +58,38 @@ export interface AppPaths {
   logDir: string;
 }
 
+export interface SessionSummary {
+  saved: boolean;
+  kind: string;
+  accountName: string;
+  biz: string;
+  hasCookie: boolean;
+  hasKey: boolean;
+  hasToken: boolean;
+  capturedAt: string;
+  sourceUrl: string;
+  path: string;
+}
+
+export interface PageHint {
+  usable: boolean;
+  message: string;
+  kind: string;
+  biz: string;
+}
+
+export interface WechatPageEvent {
+  url: string;
+  hint: PageHint;
+}
+
+export interface HistoryPreview {
+  accountName: string;
+  count: number;
+  urls: string[];
+  sourceNote: string;
+}
+
 export interface ExportSettings {
   outputDir: string;
   bookTitle: string;

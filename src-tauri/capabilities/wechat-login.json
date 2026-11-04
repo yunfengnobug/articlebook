@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "wechat-login-isolated",
+  "description": "The WeChat login window has no command permissions and no remote IPC allowlist. The page at mp.weixin.qq.com cannot call ArticleBook.",
+  "windows": ["wechat-login"],
+  "local": false,
+  "permissions": []
+}
