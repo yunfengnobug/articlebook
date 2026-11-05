@@ -139,6 +139,7 @@ function chooseRecent() {
 
 function describeSession(value: SessionSummary | null): string {
   if (!value?.saved) return "未登录";
+  if (!value.ready) return value.detail || "会话不完整，还不能归档。";
   const name = value.accountName.trim() || "这个公众号";
   return `已保存「${name}」`;
 }
@@ -165,7 +166,7 @@ function onProgress(event: ProgressEvent) {
 
 function onWechatPage(event: WechatPageEvent) {
   pageHint.value = event.hint.message;
-  if (event.hint.usable) pageUrl.value = event.url;
+  pageUrl.value = event.url;
 }
 
 function requireDesktop(action: string): boolean {
@@ -178,8 +179,9 @@ async function preview() {
   error.value = "";
   if (wechatMode.value) {
     if (!requireDesktop("查看篇数")) return;
-    if (!session.value?.saved) {
-      error.value = "还没有登录。请先完成步骤 1 和步骤 2。";
+    if (!session.value?.ready) {
+      error.value =
+        session.value?.detail || "还没有可归档的登录。请先打开带 key 的历史消息，或带 token 的图文列表，再保存。";
       return;
     }
     try {
@@ -311,9 +313,9 @@ async function saveSession() {
     clearCookie.value = false;
     if (!accountName.value && saved.accountName) accountName.value = saved.accountName;
     if (saved.sourceUrl) pageUrl.value = saved.sourceUrl;
-    pageHint.value = saved.hasCookie
+    pageHint.value = saved.ready
       ? "已保存。回到步骤 3，点「开始归档」。"
-      : "地址已保存，但没有 Cookie。打开「高级：手动 Cookie」，粘贴请求头里的一行后再保存一次。";
+      : saved.detail || "会话还不完整，还不能归档。";
   } catch (err) {
     error.value = errorText(err);
   }
@@ -351,8 +353,9 @@ async function run() {
     error.value = "请粘贴链接，或选择链接文件。";
     return;
   }
-  if (wechatMode.value && !session.value?.saved) {
-    error.value = "还没有登录。请先完成步骤 1 和步骤 2。";
+  if (wechatMode.value && !session.value?.ready) {
+    error.value =
+      session.value?.detail || "还没有可归档的登录。请先打开带 key 的历史消息，或带 token 的图文列表，再保存。";
     return;
   }
   running.value = true;
@@ -436,6 +439,7 @@ onMounted(async () => {
     if (session.value.saved) {
       if (!accountName.value && session.value.accountName) accountName.value = session.value.accountName;
       if (session.value.sourceUrl) pageUrl.value = session.value.sourceUrl;
+      if (!session.value.ready && session.value.detail) pageHint.value = session.value.detail;
     }
   } catch (err) {
     error.value = errorText(err);
@@ -501,13 +505,13 @@ onUnmounted(() => {
                 用系统浏览器（高级）
               </button>
             </div>
-            <p class="tip">用微信扫码登录。</p>
+            <p class="tip">用微信扫码登录。扫码后如果停在公众平台首页，还要再打开历史消息或图文列表。</p>
           </section>
 
           <section class="step">
             <h3>步骤 2 · 打开要归档的公众号历史</h3>
             <p class="tip">
-              登录后打开该公众号的「历史消息」页面（地址栏通常带 __biz）。自己管理的号，打开图文列表也行。应用内窗口打开到正确页后，点「我已打开历史消息 · 保存」。
+              登录后打开该公众号的「历史消息」，地址栏要同时有 __biz 和 key。/s/ 短链和公众平台首页都不是目录，保存它们不会变成登录。自己管理的号，请打开图文列表（地址里有 appmsg 和 token）。页面加载完后再点「我已打开历史消息 · 保存」。
             </p>
             <button type="button" class="primary" :disabled="running" @click="saveSession">
               我已打开历史消息 · 保存

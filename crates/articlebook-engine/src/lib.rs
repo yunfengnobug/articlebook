@@ -33,10 +33,10 @@ pub use fetch::{
     decode_document, decode_text_bytes, Fetched, HttpClient, ReqwestClient, USER_AGENT,
 };
 pub use history::{
-    collect_history, describe_wechat_page, history_limit_or_default, load_session,
-    parse_history_document, prepare_session, save_session, session_file, session_from_page_url,
-    HistoryClient, HistoryEntry, HistoryKind, PageHint, SessionSummary, WechatWebSession,
-    SAFETY_MAX_ARTICLES, SAFETY_MAX_PAGES, SESSION_FILE_NAME,
+    collect_history, complete_session, describe_wechat_page, history_limit_or_default,
+    load_session, parse_history_document, prepare_session, save_session, session_file,
+    session_from_page_url, HistoryClient, HistoryEntry, HistoryKind, PageHint, SessionSummary,
+    WechatWebSession, SAFETY_MAX_ARTICLES, SAFETY_MAX_PAGES, SESSION_FILE_NAME,
 };
 pub use logging::init_logging;
 pub use model::{Article, ArticleKind, Block, FailureRecord, Inline};

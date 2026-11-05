@@ -73,6 +73,10 @@ pub struct WechatWebSession {
     pub uin: String,
     pub key: String,
     pub pass_ticket: String,
+    /// Short-lived credential from the history page (`appmsg_token` query, cookie, or script).
+    /// Old session files omit it; [`hydrate_session`] copies it out of `cookie` when present.
+    #[serde(default)]
+    pub appmsg_token: String,
     pub token: String,
     pub cookie: String,
     pub source_url: String,
@@ -82,7 +86,12 @@ pub struct WechatWebSession {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
+    /// A session file was parsed. This alone does not mean history can be listed.
     pub saved: bool,
+    /// The saved file has the credentials the corresponding WeChat list API requires.
+    pub ready: bool,
+    /// Why `ready` is false. Empty when the file is missing or the session can list.
+    pub detail: String,
     pub kind: String,
     pub account_name: String,
     pub biz: String,
@@ -98,6 +107,8 @@ impl SessionSummary {
     pub fn missing(path: &Path) -> Self {
         Self {
             saved: false,
+            ready: false,
+            detail: String::new(),
             kind: String::new(),
             account_name: String::new(),
             biz: String::new(),
@@ -111,8 +122,11 @@ impl SessionSummary {
     }
 
     pub fn from_session(session: &WechatWebSession, path: &Path) -> Self {
+        let detail = session_gap(session).unwrap_or_default();
         Self {
             saved: true,
+            ready: detail.is_empty(),
+            detail,
             kind: session.kind.as_str().to_string(),
             account_name: session.account_name.clone(),
             biz: session.biz.clone(),
@@ -187,7 +201,8 @@ impl HistoryClient for ReqwestHistoryClient {
             .get(parsed)
             .header(reqwest::header::USER_AGENT, user_agent)
             .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
-            .header(reqwest::header::REFERER, referer);
+            .header(reqwest::header::REFERER, referer)
+            .header("X-Requested-With", "XMLHttpRequest");
         if !cookie.is_empty() {
             request = request.header(reqwest::header::COOKIE, cookie);
         }
@@ -225,15 +240,25 @@ pub fn session_file(data_dir: &Path) -> PathBuf {
 
 pub fn describe_wechat_page(url: &str) -> PageHint {
     match session_from_page_url(url, "", "") {
-        Ok(session) => PageHint {
-            usable: true,
-            message: format!(
-                "这是{}页。点「我已打开历史消息 · 保存」。",
-                session.kind.label()
-            ),
-            kind: session.kind.as_str().to_string(),
-            biz: session.biz,
-        },
+        Ok(session) => {
+            if let Some(gap) = url_gap(&session) {
+                return PageHint {
+                    usable: false,
+                    message: gap,
+                    kind: session.kind.as_str().to_string(),
+                    biz: session.biz,
+                };
+            }
+            PageHint {
+                usable: true,
+                message: format!(
+                    "这是{}页。点「我已打开历史消息 · 保存」。",
+                    session.kind.label()
+                ),
+                kind: session.kind.as_str().to_string(),
+                biz: session.biz,
+            }
+        }
         Err(err) => PageHint {
             usable: false,
             message: err.to_string(),
@@ -264,7 +289,7 @@ pub fn session_from_page_url(
     let path = parsed.path();
     if path == "/s" || path.starts_with("/s/") {
         return Err(EngineError::Message(
-            "这是单篇文章，不是目录。请打开公众号的「历史消息」，或公众平台里的图文素材列表，再复制地址栏。"
+            "这是单篇文章（/s/ 短链或 /s 地址），不是历史目录。地址栏里通常没有 __biz 和 key，保存它不会变成登录。请打开该公众号的「历史消息」，直到地址栏同时出现 __biz 和 key。"
                 .into(),
         ));
     }
@@ -277,18 +302,23 @@ pub fn session_from_page_url(
             ));
         }
         HistoryKind::ReaderHistory
-    } else if path.contains("appmsg") || path.contains("cgi-bin") {
+    } else if path.contains("appmsg") {
         if token.is_empty() {
             return Err(EngineError::Message(
                 "公众平台地址里没有 token。请先登录，打开图文素材列表后再复制地址栏。".into(),
             ));
         }
         HistoryKind::OwnerConsole
+    } else if path.contains("cgi-bin") {
+        return Err(EngineError::Message(
+            "这是公众平台页面，但还不是图文列表。扫码后停在首页不能归档。请打开「发表记录」或图文素材，地址里需要有 appmsg 和 token。"
+                .into(),
+        ));
     } else if !biz.is_empty() {
         HistoryKind::ReaderHistory
     } else {
         return Err(EngineError::Message(
-            "这还不是历史目录。登录后打开公众号「历史消息」，或公众平台的图文列表，再复制地址栏。"
+            "这还不是历史目录。登录后打开公众号「历史消息」（地址栏要同时有 __biz 和 key），或公众平台的图文列表（appmsg 和 token），再复制地址栏。"
                 .into(),
         ));
     };
@@ -302,6 +332,7 @@ pub fn session_from_page_url(
         uin: query_value(&parsed, "uin"),
         key: query_value(&parsed, "key"),
         pass_ticket: query_value(&parsed, "pass_ticket"),
+        appmsg_token: query_value(&parsed, "appmsg_token"),
         token,
         cookie: cookie.trim().to_string(),
         source_url: source.to_string(),
@@ -327,11 +358,20 @@ pub fn prepare_session(
         if session.cookie.is_empty() && !clear_cookie {
             session.cookie = previous.cookie.clone();
         }
+        if same_target(&session, previous) {
+            fill_empty(&mut session.key, &previous.key);
+            fill_empty(&mut session.pass_ticket, &previous.pass_ticket);
+            fill_empty(&mut session.uin, &previous.uin);
+            fill_empty(&mut session.appmsg_token, &previous.appmsg_token);
+            fill_empty(&mut session.token, &previous.token);
+            fill_empty(&mut session.biz, &previous.biz);
+        }
     }
     if clear_cookie {
         session.cookie.clear();
     }
     reject_cookie_injection(&session.cookie)?;
+    hydrate_session(&mut session);
     Ok(session)
 }
 
@@ -347,7 +387,7 @@ pub fn save_session(path: &Path, session: &WechatWebSession) -> Result<(), Engin
 
 pub fn load_session(path: &Path) -> Result<WechatWebSession, EngineError> {
     let bytes = std::fs::read(path).map_err(|err| EngineError::reading(path, err))?;
-    let session: WechatWebSession = serde_json::from_slice(&bytes)
+    let mut session: WechatWebSession = serde_json::from_slice(&bytes)
         .map_err(|_| EngineError::Message("会话文件无法读取。请在界面里重新保存一次。".into()))?;
     if session.version == 0 {
         return Err(EngineError::Message(
@@ -355,6 +395,7 @@ pub fn load_session(path: &Path) -> Result<WechatWebSession, EngineError> {
         ));
     }
     reject_cookie_injection(&session.cookie)?;
+    hydrate_session(&mut session);
     Ok(session)
 }
 
@@ -370,6 +411,9 @@ pub async fn collect_history(
     delay: Duration,
 ) -> Result<Vec<HistoryEntry>, EngineError> {
     reject_cookie_injection(&session.cookie)?;
+    if let Some(gap) = session_gap(session) {
+        return Err(EngineError::Message(gap));
+    }
     // `0` matches the public `history_limit` sentinel: no cap besides the safety ceiling.
     let limit = resolve_history_limit(limit);
     let pace = Pace::new(delay);
@@ -462,9 +506,7 @@ fn parse_history_page(body: &str) -> Result<HistoryPage, EngineError> {
                         .and_then(|item| json_string(item.get("err_msg")))
                 })
                 .unwrap_or_else(|| format!("ret={code}"));
-            return Err(EngineError::Message(format!(
-                "微信拒绝了目录请求（{reason}）。请重新登录后再保存会话。ArticleBook 不会绕过验证。"
-            )));
+            return Err(EngineError::Message(history_rejected_message(&reason)));
         }
     }
     if let Some(list) = value.get("app_msg_list").and_then(Value::as_array) {
@@ -574,6 +616,9 @@ fn history_request_url(
     offset: usize,
     count: usize,
 ) -> Result<String, EngineError> {
+    let appmsg_token = effective_appmsg_token(session);
+    let pass_ticket = effective_cookie_field(&session.pass_ticket, &session.cookie, "pass_ticket");
+    let uin = effective_uin(session);
     let mut url = match session.kind {
         HistoryKind::ReaderHistory => {
             if session.biz.trim().is_empty() {
@@ -590,9 +635,10 @@ fn history_request_url(
                 pairs.append_pair("f", "json");
                 pairs.append_pair("offset", &offset.to_string());
                 pairs.append_pair("count", &count.to_string());
-                append_if(&mut pairs, "uin", &session.uin);
+                append_if(&mut pairs, "uin", &uin);
                 append_if(&mut pairs, "key", &session.key);
-                append_if(&mut pairs, "pass_ticket", &session.pass_ticket);
+                append_if(&mut pairs, "pass_ticket", &pass_ticket);
+                append_if(&mut pairs, "appmsg_token", &appmsg_token);
             }
             url
         }
@@ -612,7 +658,9 @@ fn history_request_url(
                 pairs.append_pair("type", "9");
                 pairs.append_pair("lang", "zh_CN");
                 pairs.append_pair("f", "json");
+                pairs.append_pair("ajax", "1");
                 pairs.append_pair("token", session.token.trim());
+                append_if(&mut pairs, "fakeid", &session.biz);
             }
             url
         }
@@ -622,13 +670,20 @@ fn history_request_url(
 }
 
 fn history_referer(session: &WechatWebSession) -> Result<String, EngineError> {
+    let pass_ticket = effective_cookie_field(&session.pass_ticket, &session.cookie, "pass_ticket");
+    let appmsg_token = effective_appmsg_token(session);
     let mut url = match session.kind {
         HistoryKind::ReaderHistory => {
             let mut url = Url::parse("https://mp.weixin.qq.com/mp/profile_ext")
                 .map_err(|err| EngineError::BadUrl(err.to_string()))?;
-            url.query_pairs_mut()
-                .append_pair("action", "home")
-                .append_pair("__biz", session.biz.trim());
+            {
+                let mut pairs = url.query_pairs_mut();
+                pairs.append_pair("action", "home");
+                pairs.append_pair("__biz", session.biz.trim());
+                append_if(&mut pairs, "key", &session.key);
+                append_if(&mut pairs, "pass_ticket", &pass_ticket);
+                append_if(&mut pairs, "appmsg_token", &appmsg_token);
+            }
             url
         }
         HistoryKind::OwnerConsole => {
@@ -644,6 +699,308 @@ fn history_referer(session: &WechatWebSession) -> Result<String, EngineError> {
     };
     let _ = url.set_scheme("https");
     Ok(url.to_string())
+}
+
+/// Copy credentials out of an optional page body, then refuse an incomplete session.
+///
+/// `page_html` is the history page the user already opened. Nothing is invented
+/// when that body does not contain the missing fields.
+pub fn finish_session(
+    mut session: WechatWebSession,
+    page_html: Option<&str>,
+) -> Result<WechatWebSession, EngineError> {
+    hydrate_session(&mut session);
+    if let Some(html) = page_html {
+        enrich_session_from_html(&mut session, html);
+        hydrate_session(&mut session);
+    }
+    if let Some(gap) = session_gap(&session) {
+        return Err(EngineError::Message(gap));
+    }
+    Ok(session)
+}
+
+/// Like [`finish_session`], and reads the saved page once when `key` or
+/// `appmsg_token` is still missing. The read uses the cookie the user already
+/// supplied and stays on `mp.weixin.qq.com`.
+pub async fn complete_session(session: WechatWebSession) -> Result<WechatWebSession, EngineError> {
+    let html = if needs_page_enrich(&session) {
+        fetch_page_html(&session).await
+    } else {
+        None
+    };
+    finish_session(session, html.as_deref())
+}
+
+async fn fetch_page_html(session: &WechatWebSession) -> Option<String> {
+    let client = ReqwestHistoryClient::new(Duration::from_secs(20)).ok()?;
+    client
+        .get_text(
+            &session.source_url,
+            session.cookie.trim(),
+            USER_AGENT,
+            "https://mp.weixin.qq.com/",
+        )
+        .await
+        .ok()
+}
+
+/// What is wrong with the address bar, ignoring cookies.
+///
+/// The login window calls this before the cookie is read. A history URL with
+/// `__biz` and `key`, or an article-list URL with `token`, is usable.
+fn url_gap(session: &WechatWebSession) -> Option<String> {
+    match session.kind {
+        HistoryKind::ReaderHistory => {
+            if session.biz.trim().is_empty() {
+                return Some("地址里没有 __biz。请打开某个公众号的历史消息页后再复制。".into());
+            }
+            if session.key.trim().is_empty() {
+                return Some(
+                    "地址里有 __biz，但没有 key。只保存这种地址时，历史目录会返回 no session。请打开「历史消息」，直到地址栏同时有 __biz 和 key。/s/ 短链不会带上 key。"
+                        .into(),
+                );
+            }
+            None
+        }
+        HistoryKind::OwnerConsole => {
+            if session.token.trim().is_empty() {
+                return Some("公众平台地址里没有 token。请打开图文列表后再复制。".into());
+            }
+            None
+        }
+    }
+}
+
+/// Why this session cannot call the history API. `None` means it is ready.
+pub fn session_gap(session: &WechatWebSession) -> Option<String> {
+    if let Some(gap) = url_gap(session) {
+        return Some(gap);
+    }
+    match session.kind {
+        HistoryKind::ReaderHistory => {
+            if effective_appmsg_token(session).is_empty() {
+                return Some(
+                    "会话里没有 appmsg_token。历史目录会返回 no session。请等历史消息页加载完再保存；Cookie 或页面里需要有 appmsg_token。"
+                        .into(),
+                );
+            }
+            if !cookie_has(&session.cookie, "wap_sid2") {
+                return Some(
+                    "Cookie 里没有读者登录态 wap_sid2。现在保存的话，归档会向微信要目录并得到 no session。请在历史消息页加载完后再保存；如果用的是系统浏览器，把请求头里的整行 Cookie 贴到「高级：手动 Cookie」。"
+                        .into(),
+                );
+            }
+            None
+        }
+        HistoryKind::OwnerConsole => {
+            if !cookie_has(&session.cookie, "slave_sid")
+                && !cookie_has(&session.cookie, "data_ticket")
+            {
+                return Some(
+                    "Cookie 里没有公众平台登录态（slave_sid 或 data_ticket）。扫码停在首页、或只剩无关 Cookie 时，图文列表会失败。请打开图文列表后再保存。"
+                        .into(),
+                );
+            }
+            None
+        }
+    }
+}
+
+fn needs_page_enrich(session: &WechatWebSession) -> bool {
+    match session.kind {
+        HistoryKind::ReaderHistory => {
+            session.key.trim().is_empty() || effective_appmsg_token(session).is_empty()
+        }
+        HistoryKind::OwnerConsole => false,
+    }
+}
+
+/// Copy `appmsg_token`, `pass_ticket`, and `uin` out of the cookie when the URL omitted them.
+pub fn hydrate_session(session: &mut WechatWebSession) {
+    if session.appmsg_token.trim().is_empty() {
+        if let Some(value) = cookie_value(&session.cookie, "appmsg_token") {
+            session.appmsg_token = value;
+        }
+    }
+    if session.pass_ticket.trim().is_empty() {
+        if let Some(value) = cookie_value(&session.cookie, "pass_ticket") {
+            session.pass_ticket = value;
+        }
+    }
+    if session.uin.trim().is_empty() {
+        if let Some(value) =
+            cookie_value(&session.cookie, "wxuin").or_else(|| cookie_value(&session.cookie, "uin"))
+        {
+            session.uin = value;
+        }
+    }
+}
+
+/// Pull credentials already present in a history or article page the user opened.
+pub fn enrich_session_from_html(session: &mut WechatWebSession, html: &str) {
+    if html.contains("环境异常") && html.contains("去验证") {
+        return;
+    }
+    let html = html
+        .replace("&amp;", "&")
+        .replace("\\u0026", "&")
+        .replace("\\x26", "&");
+    if session.biz.trim().is_empty() {
+        if let Some(value) =
+            query_param_in_text(&html, "__biz").or_else(|| js_assigned(&html, "biz"))
+        {
+            if plausible_secret(&value) {
+                session.biz = value;
+            }
+        }
+    }
+    if session.key.trim().is_empty() {
+        if let Some(value) = query_param_in_text(&html, "key") {
+            if plausible_secret(&value) {
+                session.key = value;
+            }
+        }
+    }
+    if session.pass_ticket.trim().is_empty() {
+        if let Some(value) =
+            query_param_in_text(&html, "pass_ticket").or_else(|| js_assigned(&html, "pass_ticket"))
+        {
+            if plausible_secret(&value) {
+                session.pass_ticket = value;
+            }
+        }
+    }
+    if session.uin.trim().is_empty() {
+        if let Some(value) = query_param_in_text(&html, "uin").or_else(|| js_assigned(&html, "uin"))
+        {
+            if !value.is_empty() && value.len() <= 128 {
+                session.uin = value;
+            }
+        }
+    }
+    if session.appmsg_token.trim().is_empty() {
+        if let Some(value) = query_param_in_text(&html, "appmsg_token")
+            .or_else(|| js_assigned(&html, "appmsg_token"))
+        {
+            if plausible_secret(&value) {
+                session.appmsg_token = value;
+            }
+        }
+    }
+}
+
+fn history_rejected_message(reason: &str) -> String {
+    let folded = reason.to_ascii_lowercase();
+    if folded.contains("no session") {
+        return "微信拒绝了目录请求（no session）。这表示保存下来的登录态不完整或已过期：读者目录需要 key、pass_ticket、appmsg_token，以及 Cookie 里的 wap_sid2；公众平台目录需要 token，以及 Cookie 里的 slave_sid 或 data_ticket。请重新打开对应页面后再保存。ArticleBook 不会绕过验证。".into();
+    }
+    if folded.contains("freq") {
+        return format!("微信限制了翻页频率（{reason}）。请稍后再试。这不是登录失效。");
+    }
+    if folded.contains("invalid session") || folded.contains("invalid csrf") {
+        return format!(
+            "微信拒绝了目录请求（{reason}）。公众平台的 token 和 Cookie 对不上。请重新扫码，打开图文列表后再保存。ArticleBook 不会绕过验证。"
+        );
+    }
+    format!("微信拒绝了目录请求（{reason}）。请重新打开目录页后再保存。ArticleBook 不会绕过验证。")
+}
+
+fn same_target(session: &WechatWebSession, previous: &WechatWebSession) -> bool {
+    if session.kind != previous.kind {
+        return false;
+    }
+    let biz = session.biz.trim();
+    let previous_biz = previous.biz.trim();
+    if !biz.is_empty() && !previous_biz.is_empty() {
+        return biz == previous_biz;
+    }
+    let token = session.token.trim();
+    let previous_token = previous.token.trim();
+    !token.is_empty() && token == previous_token
+}
+
+fn fill_empty(slot: &mut String, previous: &str) {
+    if slot.trim().is_empty() {
+        *slot = previous.trim().to_string();
+    }
+}
+
+fn effective_appmsg_token(session: &WechatWebSession) -> String {
+    effective_cookie_field(&session.appmsg_token, &session.cookie, "appmsg_token")
+}
+
+fn effective_uin(session: &WechatWebSession) -> String {
+    let direct = session.uin.trim();
+    if !direct.is_empty() {
+        return direct.to_string();
+    }
+    cookie_value(&session.cookie, "wxuin")
+        .or_else(|| cookie_value(&session.cookie, "uin"))
+        .unwrap_or_default()
+}
+
+fn effective_cookie_field(field: &str, cookie: &str, name: &str) -> String {
+    let field = field.trim();
+    if !field.is_empty() {
+        return field.to_string();
+    }
+    cookie_value(cookie, name).unwrap_or_default()
+}
+
+fn cookie_has(cookie: &str, name: &str) -> bool {
+    cookie_value(cookie, name).is_some()
+}
+
+fn cookie_value(cookie: &str, name: &str) -> Option<String> {
+    for part in cookie.split(';') {
+        let part = part.trim();
+        let (key, value) = part.split_once('=')?;
+        if key.trim() == name {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn query_param_in_text(html: &str, name: &str) -> Option<String> {
+    let pattern = format!(r#"(?:[?&]|["']){name}=([^&"'\\\s<>]+)"#);
+    let re = regex::Regex::new(&pattern).ok()?;
+    let raw = re.captures(html)?.get(1)?.as_str();
+    decode_query_component(raw)
+}
+
+fn js_assigned(html: &str, name: &str) -> Option<String> {
+    let pattern =
+        format!(r#"(?i)(?:^|[^A-Za-z0-9_])(?:var\s+|window\.)?{name}\s*[:=]\s*["']([^"']+)["']"#);
+    let re = regex::Regex::new(&pattern).ok()?;
+    decode_query_component(re.captures(html)?.get(1)?.as_str())
+}
+
+fn decode_query_component(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "undefined" || raw == "null" {
+        return None;
+    }
+    let parsed = Url::parse(&format!("https://mp.weixin.qq.com/?x={raw}")).ok()?;
+    let value = query_value(&parsed, "x");
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn plausible_secret(value: &str) -> bool {
+    let value = value.trim();
+    (4..=512).contains(&value.len())
+        && !value.contains(' ')
+        && value.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '~' | '%' | '+' | '/' | '=')
+        })
 }
 
 fn append_if<T: Target>(pairs: &mut url::form_urlencoded::Serializer<T>, key: &str, value: &str) {
@@ -776,6 +1133,7 @@ mod tests {
     use super::*;
     use crate::error::EngineError;
     use async_trait::async_trait;
+    use std::path::Path;
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -865,6 +1223,13 @@ mod tests {
         assert!(url.contains("offset=10"));
         assert!(url.contains("action=getmsg"));
         assert!(!url.contains("MicroMessenger"));
+        let ready = reader_session();
+        let ready_url = history_request_url(&ready, 0, 10).unwrap();
+        assert!(ready_url.contains("appmsg_token=amt"), "{ready_url}");
+        assert!(ready_url.contains("key=abc"), "{ready_url}");
+        let owner_url = history_request_url(&owner_session(), 0, 10).unwrap();
+        assert!(owner_url.contains("action=list_ex"), "{owner_url}");
+        assert!(owner_url.contains("ajax=1"), "{owner_url}");
         let bad = session_from_page_url(
             "https://mp.weixin.qq.com/mp/profile_ext?__biz=MzA",
             "a=b\nCookie: evil",
@@ -914,6 +1279,208 @@ mod tests {
     }
 
     #[test]
+    fn short_link_admin_home_and_keyless_history_are_not_a_saved_login() {
+        let short = session_from_page_url("https://mp.weixin.qq.com/s/AbCdEf", "wap_sid2=test", "")
+            .unwrap_err();
+        assert!(short.to_string().contains("短链"), "{short}");
+        assert!(short.to_string().contains("__biz"), "{short}");
+        let article = session_from_page_url(
+            "https://mp.weixin.qq.com/s?__biz=MzA&mid=1&idx=1&sn=abc",
+            "wap_sid2=test",
+            "",
+        )
+        .unwrap_err();
+        assert!(article.to_string().contains("单篇"), "{article}");
+
+        let home = session_from_page_url(
+            "https://mp.weixin.qq.com/cgi-bin/home?t=home/index&lang=zh_CN&token=123",
+            "slave_sid=abc; uuid=1",
+            "",
+        )
+        .unwrap_err();
+        assert!(home.to_string().contains("图文列表"), "{home}");
+        let hint = describe_wechat_page("https://mp.weixin.qq.com/cgi-bin/home?token=123");
+        assert!(!hint.usable);
+        assert!(hint.message.contains("图文列表"), "{}", hint.message);
+
+        let keyless = session_from_page_url(
+            "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzA",
+            "wxuin=1; uuid=qr",
+            "示例号",
+        )
+        .unwrap();
+        let hint =
+            describe_wechat_page("https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzA");
+        assert!(!hint.usable);
+        assert!(hint.message.contains("key"), "{}", hint.message);
+        let summary = SessionSummary::from_session(&keyless, Path::new("wechat-web-session.json"));
+        assert!(summary.saved);
+        assert!(!summary.ready);
+        assert!(summary.has_cookie);
+        assert!(summary.detail.contains("no session"), "{}", summary.detail);
+        let finished = finish_session(keyless, None).unwrap_err();
+        assert!(finished.to_string().contains("key"), "{finished}");
+    }
+
+    #[test]
+    fn cookie_without_session_name_is_not_ready_and_same_account_keeps_key() {
+        let owner = session_from_page_url(
+            "https://mp.weixin.qq.com/cgi-bin/appmsg?action=list_ex&type=9&token=TOK&lang=zh_CN",
+            "uuid=login-page",
+            "",
+        )
+        .unwrap();
+        let gap = session_gap(&owner).unwrap();
+        assert!(gap.contains("slave_sid"), "{gap}");
+        let summary = SessionSummary::from_session(&owner, Path::new("wechat-web-session.json"));
+        assert!(summary.saved && !summary.ready);
+
+        let first = session_from_page_url(
+            "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzA&key=abc&appmsg_token=amt",
+            "wap_sid2=test",
+            "甲",
+        )
+        .unwrap();
+        let kept = prepare_session(
+            "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzA",
+            "",
+            "",
+            Some(&first),
+            false,
+        )
+        .unwrap();
+        assert_eq!(kept.key, "abc");
+        assert_eq!(kept.appmsg_token, "amt");
+        assert!(session_gap(&kept).is_none(), "{kept:?}");
+        let other = prepare_session(
+            "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzB",
+            "",
+            "",
+            Some(&first),
+            false,
+        )
+        .unwrap();
+        assert!(other.key.is_empty());
+        assert!(session_gap(&other).unwrap().contains("key"));
+    }
+
+    #[test]
+    fn page_html_and_cookie_supply_appmsg_token_without_relabeling_no_session() {
+        let mut session = session_from_page_url(
+            "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzA",
+            "wap_sid2=test",
+            "示例号",
+        )
+        .unwrap();
+        enrich_session_from_html(
+            &mut session,
+            r#"<script>var appmsg_token = "amt123";</script>
+               <a href="https://mp.weixin.qq.com/mp/profile_ext?action=getmsg&amp;__biz=MzA&amp;key=abc12345&amp;pass_ticket=pticket1&amp;uin=777">"#,
+        );
+        assert_eq!(session.key, "abc12345");
+        assert_eq!(session.appmsg_token, "amt123");
+        assert_eq!(session.pass_ticket, "pticket1");
+        assert_eq!(session.uin, "777");
+        let ready = finish_session(session, None).unwrap();
+        let url = history_request_url(&ready, 0, 10).unwrap();
+        assert!(url.contains("appmsg_token=amt123"), "{url}");
+        assert!(url.contains("key=abc12345"), "{url}");
+
+        let from_cookie = session_from_page_url(
+            "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzA&key=abc",
+            "wxuin=42; wap_sid2=test; appmsg_token=fromcookie",
+            "",
+        )
+        .unwrap();
+        let loaded = finish_session(from_cookie, None).unwrap();
+        assert_eq!(loaded.appmsg_token, "fromcookie");
+        assert_eq!(loaded.uin, "42");
+        let url = history_request_url(&loaded, 0, 10).unwrap();
+        assert!(url.contains("appmsg_token=fromcookie"), "{url}");
+        assert!(url.contains("uin=42"), "{url}");
+
+        let no_session =
+            parse_history_document(r#"{"ret":-3,"errmsg":"no session","cookie_count":0}"#)
+                .unwrap_err();
+        assert!(no_session.to_string().contains("wap_sid2"), "{no_session}");
+        assert!(
+            no_session.to_string().contains("no session"),
+            "{no_session}"
+        );
+        let freq =
+            parse_history_document(r#"{"base_resp":{"ret":200013,"err_msg":"freq control"}}"#)
+                .unwrap_err();
+        assert!(freq.to_string().contains("频率"), "{freq}");
+        assert!(!freq.to_string().contains("no session"), "{freq}");
+        let invalid =
+            parse_history_document(r#"{"base_resp":{"ret":200003,"err_msg":"invalid session"}}"#)
+                .unwrap_err();
+        assert!(invalid.to_string().contains("invalid session"), "{invalid}");
+        assert!(invalid.to_string().contains("图文列表"), "{invalid}");
+        assert!(!invalid.to_string().contains("no session"), "{invalid}");
+    }
+
+    struct RefuseHistory;
+
+    #[async_trait]
+    impl HistoryClient for RefuseHistory {
+        async fn get_text(
+            &self,
+            url: &str,
+            _cookie: &str,
+            _user_agent: &str,
+            _referer: &str,
+        ) -> Result<String, EngineError> {
+            panic!("incomplete session must not request {url}");
+        }
+    }
+
+    #[test]
+    fn old_session_file_without_appmsg_token_still_loads() {
+        let dir =
+            std::env::temp_dir().join(format!("articlebook-old-session-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wechat-web-session.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"kind":"reader-history","accountName":"甲","biz":"MzA","uin":"","key":"abc","passTicket":"pt","token":"","cookie":"wap_sid2=test; appmsg_token=fromcookie","sourceUrl":"https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzA&key=abc","capturedAt":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        let session = load_session(&path).unwrap();
+        assert_eq!(session.appmsg_token, "fromcookie");
+        assert!(session_gap(&session).is_none(), "{session:?}");
+        let summary = SessionSummary::from_session(&session, &path);
+        assert!(summary.saved && summary.ready);
+
+        std::fs::write(
+            &path,
+            r#"{"version":1,"kind":"reader-history","accountName":"甲","biz":"MzOnly","uin":"","key":"","passTicket":"","token":"","cookie":"uuid=qr","sourceUrl":"https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzOnly","capturedAt":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        let partial = load_session(&path).unwrap();
+        let summary = SessionSummary::from_session(&partial, &path);
+        assert!(summary.saved && !summary.ready);
+        assert!(summary.detail.contains("key"), "{}", summary.detail);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn incomplete_reader_session_fails_before_the_history_request() {
+        let session = session_from_page_url(
+            "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzOnly",
+            "uuid=not-a-session",
+            "示例号",
+        )
+        .unwrap();
+        let err = collect_history(&RefuseHistory, &session, 10, Duration::ZERO)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("key"), "{err}");
+        assert!(!err.to_string().contains("微信拒绝了目录请求"), "{err}");
+    }
+
+    #[test]
     fn zero_history_limit_means_all_up_to_the_safety_ceiling() {
         assert_eq!(history_limit_or_default(0), SAFETY_MAX_ARTICLES);
         assert_eq!(history_limit_or_default(40), 40);
@@ -928,12 +1495,14 @@ mod tests {
     }
 
     fn reader_session() -> WechatWebSession {
-        session_from_page_url(
-            "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzFixture&key=abc",
+        let session = session_from_page_url(
+            "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzFixture&key=abc&pass_ticket=pt&appmsg_token=amt",
             "wap_sid2=test",
             "示例号",
         )
-        .unwrap()
+        .unwrap();
+        assert!(session_gap(&session).is_none(), "{session:?}");
+        session
     }
 
     fn owner_session() -> WechatWebSession {

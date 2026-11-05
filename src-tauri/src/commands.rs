@@ -1,10 +1,10 @@
 use crate::AppState;
 use articlebook_engine::{
-    describe_providers, describe_wechat_page, export_urls, load_session, parse_url_list,
-    prepare_session, provider_by_id, save_session, session_file, suggest_output_dir as suggest_dir,
-    AccountProvider, AccountRequest, ExportOptions, JobReport, NormalizeOptions, PageHint,
-    ParsedUrls, ProgressEvent, ProgressSink, ProviderInfo, ReqwestClient, SessionSummary,
-    WechatWebProvider, USER_AGENT,
+    complete_session, describe_providers, describe_wechat_page, export_urls, load_session,
+    parse_url_list, prepare_session, provider_by_id, save_session, session_file,
+    suggest_output_dir as suggest_dir, AccountProvider, AccountRequest, ExportOptions, JobReport,
+    NormalizeOptions, PageHint, ParsedUrls, ProgressEvent, ProgressSink, ProviderInfo,
+    ReqwestClient, SessionSummary, WechatWebProvider, USER_AGENT,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -291,11 +291,11 @@ pub async fn save_wechat_session(
         .unwrap_or_else(|err| err.into_inner())
         .clone();
     let previous = load_session(&path).ok();
+    let manual_cookie = !req.cookie.trim().is_empty();
     let mut page_url = req.page_url.trim().to_string();
-    if page_url.is_empty() {
-        page_url = captured;
-    }
-    if page_url.is_empty() {
+    // In-app save follows the page on screen. A stale "usable" URL left in the
+    // form must not turn a short /s/ link or the admin home into a saved login.
+    if !manual_cookie {
         if let Some(window) = app.get_webview_window(WECHAT_LOGIN_LABEL) {
             if let Ok(url) = window.url() {
                 if url.host_str() == Some("mp.weixin.qq.com") {
@@ -303,6 +303,9 @@ pub async fn save_wechat_session(
                 }
             }
         }
+    }
+    if page_url.is_empty() {
+        page_url = captured;
     }
     if page_url.is_empty() {
         return Err("请先在登录窗口打开历史消息，或在「高级：手动 Cookie」里粘贴地址。".into());
@@ -325,6 +328,9 @@ pub async fn save_wechat_session(
         req.clear_cookie,
     )
     .map_err(|err| err.to_string())?;
+    let session = complete_session(session)
+        .await
+        .map_err(|err| err.to_string())?;
     save_session(&path, &session).map_err(|err| err.to_string())?;
     Ok(SessionSummary::from_session(&session, &path))
 }
@@ -434,10 +440,12 @@ fn record_wechat_page(app: &AppHandle, url: &tauri::Url) {
     }
     let text = url.to_string();
     let hint = describe_wechat_page(&text);
-    if hint.usable {
-        if let Some(state) = app.try_state::<AppState>() {
-            if let Ok(mut slot) = state.wechat_page.lock() {
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(mut slot) = state.wechat_page.lock() {
+            if hint.usable {
                 *slot = text.clone();
+            } else {
+                slot.clear();
             }
         }
     }
@@ -446,14 +454,33 @@ fn record_wechat_page(app: &AppHandle, url: &tauri::Url) {
 
 async fn read_mp_cookie(window: tauri::WebviewWindow) -> Result<String, String> {
     let cookies = tauri::async_runtime::spawn_blocking(move || {
-        let url = "https://mp.weixin.qq.com/"
+        let root = "https://mp.weixin.qq.com/"
             .parse::<tauri::Url>()
             .expect("mp host");
-        window.cookies_for_url(url)
+        // Root first, then the open page, so a path-scoped session cookie wins.
+        let mut urls = vec![root.clone()];
+        if let Ok(current) = window.url() {
+            if current.host_str() == Some("mp.weixin.qq.com") && current != root {
+                urls.push(current);
+            }
+        }
+        let mut merged = Vec::new();
+        let mut last_err = None;
+        for url in urls {
+            match window.cookies_for_url(url) {
+                Ok(list) => merged.extend(list),
+                Err(err) => last_err = Some(err.to_string()),
+            }
+        }
+        if merged.is_empty() {
+            if let Some(err) = last_err {
+                return Err(format!("读取登录窗口 Cookie 失败：{err}"));
+            }
+        }
+        Ok(merged)
     })
     .await
-    .map_err(|err| format!("读取登录窗口 Cookie 失败：{err}"))?
-    .map_err(|err| format!("读取登录窗口 Cookie 失败：{err}"))?;
+    .map_err(|err| format!("读取登录窗口 Cookie 失败：{err}"))??;
     Ok(cookie_header(&cookies))
 }
 
@@ -510,16 +537,31 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
 }
 
 fn cookie_header(cookies: &[tauri::webview::Cookie<'static>]) -> String {
-    let mut parts = Vec::new();
+    let mut names = Vec::new();
+    let mut values = Vec::new();
     for cookie in cookies {
         let name = cookie.name();
         let value = cookie.value();
-        if name.is_empty() || name.contains(['\n', '\r', ';']) || value.contains(['\n', '\r']) {
+        if name.is_empty()
+            || value.is_empty()
+            || name.contains(['\n', '\r', ';', '='])
+            || value.contains(['\n', '\r'])
+        {
             continue;
         }
-        parts.push(format!("{name}={value}"));
+        if let Some(pos) = names.iter().position(|existing: &String| existing == name) {
+            values[pos] = value.to_string();
+        } else {
+            names.push(name.to_string());
+            values.push(value.to_string());
+        }
     }
-    parts.join("; ")
+    names
+        .iter()
+        .zip(values)
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn open_constant_site(url: &str) -> Result<(), String> {
