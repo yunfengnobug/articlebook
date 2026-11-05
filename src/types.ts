@@ -60,6 +60,8 @@ export interface AppPaths {
 
 export interface SessionSummary {
   saved: boolean;
+  ready: boolean;
+  detail: string;
   kind: string;
   accountName: string;
   biz: string;

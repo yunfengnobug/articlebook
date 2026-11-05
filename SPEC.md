@@ -58,8 +58,8 @@ articlebook/
 
 - 用户授权范围：一个你已经能打开的公众号的全部历史，或你自己管理的图文列表。默认一直翻到没有下一页，单次最多 5000 篇、1000 页。不绕过付费墙，不伪装微信客户端，也不去抓你打不开的号。
 - 鉴权：应用内登录窗口只导航并读取该窗口的 Cookie；系统浏览器路径由用户粘贴地址和可选 Cookie 头。登录窗口不在主权限里，没有远程 IPC 白名单。
-- 落盘：Tauri 数据目录 `wechat-web-session.json`（Unix `0600`）。含 cookie、key、passTicket、token、biz、uin、sourceUrl。空 Cookie 再保存会保留旧 Cookie，除非用户勾选清除。
-- 目录请求：`profile_ext?action=getmsg` 或 `appmsg?action=list_ex`，User-Agent 固定为带 `ArticleBook/0.1` 的桌面浏览器标识。验证页和 `ret != 0` 直接失败。
+- 落盘：Tauri 数据目录 `wechat-web-session.json`（Unix `0600`）。含 cookie、key、passTicket、appmsgToken、token、biz、uin、sourceUrl。空 Cookie 再保存会保留旧 Cookie，除非用户勾选清除。只有能拉目录的会话才显示「已保存」：读者要 `__biz`、`key`、`appmsg_token` 和 Cookie 里的 `wap_sid2`；公众平台要 `appmsg` 页的 `token` 和 Cookie 里的 `slave_sid` 或 `data_ticket`。`/s/` 短链和扫码后的首页会拒绝，并说明缺什么。
+- 目录请求：`profile_ext?action=getmsg`（带上已有的 `appmsg_token`）或 `appmsg?action=list_ex`（带 `ajax=1`），User-Agent 固定为带 `ArticleBook/0.1` 的桌面浏览器标识。验证页和 `ret != 0` 直接失败。`no session`、invalid session、频率限制分开说明。不完整的会话在请求前就失败，不会先报成微信的 no session。
 - 尚未在无微信登录的环境验证扫码全流程。离线样例覆盖解析和「列表 → 导出」。
 
 ## 验收

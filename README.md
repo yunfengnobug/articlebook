@@ -85,23 +85,23 @@ cargo run -p articlebook-engine --bin articlebook-cli -- history-parse \
 公众号模式按三步走，只处理你这次登录后有权阅读的那一个号。拉到的文章 URL 交给原来的批处理（进度事件、缓存、`book.md`、`articles/*.md`、可选 `book.epub`）。
 
 1. **登录微信网页。** 点「在应用内打开登录页」，用微信扫码。需要时再用「用系统浏览器（高级）」。两种入口都只打开 `https://mp.weixin.qq.com/`。
-2. **打开要归档的公众号历史。** 在登录后的窗口里打开该号的「历史消息」（地址栏通常带 `__biz`）。你自己管理的号也可以打开公众平台的图文列表（地址里有 `token`）。应用内窗口打开到正确页后，点「我已打开历史消息 · 保存」。
+2. **打开要归档的公众号历史。** 在登录后的窗口里打开该号的「历史消息」，地址栏要同时有 `__biz` 和 `key`。`/s/` 短链和公众平台首页都不是目录。你自己管理的号要打开图文列表（地址里有 `appmsg` 和 `token`）。页面加载完后再点「我已打开历史消息 · 保存」。
 3. **拉取全部文章并归档。** 默认是「全部文章」。选好输出目录，点「开始归档」。想先确认篇数，点「先看看有多少篇」。
 
 两种官方页面可以当目录：
 
-- 读者打开的公众号「历史消息」（地址里有 `__biz`，接口是 `mp/profile_ext?action=getmsg`，看 `can_msg_continue`）。
-- 你自己管理的公众号，在公众平台里打开的图文素材列表（地址里有 `token`，接口是 `cgi-bin/appmsg?action=list_ex`）。
+- 读者打开的公众号「历史消息」（地址里同时有 `__biz` 和 `key`，Cookie 里有 `wap_sid2`，还要有 `appmsg_token`。接口是 `mp/profile_ext?action=getmsg`，看 `can_msg_continue`）。
+- 你自己管理的公众号，在公众平台里打开的图文素材列表（地址里有 `appmsg` 和 `token`，Cookie 里有 `slave_sid` 或 `data_ticket`。接口是 `cgi-bin/appmsg?action=list_ex`）。扫码后的首页不算。
 
 「全部文章」会按历史接口一直翻页，直到 `can_msg_continue` / `can_continue` 为假，或这一页已经没有文章。单次还有安全上限：最多 5000 篇、最多 1000 次翻页，避免接口一直说还有下一页时停不下来。传给引擎的 `history_limit == 0` 就是这条「全部」路径；「仅最近 N 篇」则传入 N（同样不超过 5000）。页与页之间间隔 800 毫秒。五千篇的目录大约要几分钟翻完，然后再抓正文。
 
-应用内登录窗口会在保存时读取 `mp.weixin.qq.com` 的 Cookie（含 HttpOnly），并记住地址栏里的 `__biz`、`uin`、`key`、`pass_ticket` 或 `token`。窗口里的地址会自动填回「历史页地址」。这个窗口没有 Tauri 命令权限，页面不能反过来调用 ArticleBook。
+应用内登录窗口会在保存时读取当前页和 `mp.weixin.qq.com` 的 Cookie（含 HttpOnly），并记住地址栏里的 `__biz`、`uin`、`key`、`pass_ticket`、`appmsg_token` 或 `token`。缺的 `appmsg_token` 会从 Cookie 或该页正文里已有的值补上，不会另造参数。窗口里当时打开的地址会覆盖输入框里旧的地址。这个窗口没有 Tauri 命令权限，页面不能反过来调用 ArticleBook。
 
 系统浏览器里的 Cookie 不会自动回到应用。把历史页地址和请求头 Cookie 贴到折叠的「高级：手动 Cookie」。只粘贴一行，不要换行。留空再保存会沿用文件里的 Cookie；勾选「清除已保存的 Cookie」才会清掉。
 
-会话写在 Tauri 应用数据目录的 `wechat-web-session.json`。字段是 `version`、`kind`（`reader-history` 或 `owner-console`）、`accountName`、`biz`、`uin`、`key`、`passTicket`、`token`、`cookie`、`sourceUrl`、`capturedAt`。在 Unix 上文件模式是 `0600`。Windows 上它位于当前用户的应用数据目录，没有额外的 ACL。界面只显示「已保存某某号」或「未登录」，不回显 Cookie，也不把会话文件路径放在主界面上。日志不记录 Cookie、`key` 或 `pass_ticket`。
+会话写在 Tauri 应用数据目录的 `wechat-web-session.json`。字段是 `version`、`kind`（`reader-history` 或 `owner-console`）、`accountName`、`biz`、`uin`、`key`、`passTicket`、`appmsgToken`、`token`、`cookie`、`sourceUrl`、`capturedAt`。在 Unix 上文件模式是 `0600`。Windows 上它位于当前用户的应用数据目录，没有额外的 ACL。界面在会话确实能拉目录时显示「已保存某某号」。文件在但缺 `key`、`wap_sid2`、`appmsg_token` 或公众平台登录态时，显示缺什么，而不是「已保存」。不回显 Cookie，也不把会话文件路径放在主界面上。日志不记录 Cookie、`key` 或 `pass_ticket`。
 
-历史目录每次向微信要 10 篇。请求主机固定是 `mp.weixin.qq.com`；若被转到别的站点，或返回验证页 / `ret != 0`，这次会失败。
+历史目录每次向微信要 10 篇。读者请求会带上已保存的 `appmsg_token`。公众平台请求带 `ajax=1`。请求主机固定是 `mp.weixin.qq.com`；若被转到别的站点，或返回验证页 / `ret != 0`，这次会失败。`no session`、登录态对不上、翻页频率是三句不同的说明。
 
 手动链接在「改用手动粘贴链接」里。WMPF 不出现在主路径上，程序里也没有 Frida 或 WMPF 调用。
 
@@ -117,7 +117,7 @@ cargo run -p articlebook-engine --bin articlebook-cli -- history-parse \
 6. 若拉取报会话失效或验证页，在微信网页里自己处理后再保存；不要期待程序绕过
 7. 若应用内窗口读到的 Cookie 不够，改用系统浏览器，把地址和 Cookie 贴到「高级：手动 Cookie」
 
-`key` 和 `pass_ticket` 会过期。过期后重新打开历史页再保存一次。
+`key`、`pass_ticket` 和 `appmsg_token` 会过期。过期后重新打开历史页再保存一次。0.1.3 里已经保存、但文件里没有 `key` / `wap_sid2` / `appmsg_token`（或公众平台的 `slave_sid` / `data_ticket`）的会话，更新后不会再显示「已保存」，需要按上面的页面重新保存一次。Cookie 里已经有 `appmsg_token`、地址里也有 `key` 和 `wap_sid2` 的，不用重扫。
 
 ## Windows 打包
 

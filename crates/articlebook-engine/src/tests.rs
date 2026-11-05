@@ -540,7 +540,7 @@ fn wechat_html(title: &str) -> String {
 async fn wechat_web_history_fixture_lists_then_exports() {
     let dir = scratch();
     let session = session_from_page_url(
-        "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzFixture&uin=777&key=abc&pass_ticket=pt",
+        "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzFixture&uin=777&key=abc&pass_ticket=pt&appmsg_token=amt",
         "wap_sid2=test",
         "示例号",
     )
@@ -653,7 +653,7 @@ fn reader_history_page(start: usize, count: usize, can_continue: bool) -> String
 async fn wechat_web_history_limit_zero_reads_past_two_hundred() {
     let dir = scratch();
     let session = session_from_page_url(
-        "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzFixture&key=abc",
+        "https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzFixture&key=abc&appmsg_token=amt",
         "wap_sid2=test",
         "示例号",
     )
